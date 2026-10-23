@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.angular/
+.data/
+uploads/
+.env
+.env.local
+*.log
+.DS_Store
+coverage/
+
+# Cloudflare local development
+.wrangler/
+.dev.vars
+
+# Freebuff agent runtime and local cache
+.freebuff/

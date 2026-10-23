@@ -1,0 +1,24 @@
+{
+  "name": "pet-vet-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pet Vet AI — India-focused animal care, records, AI safety layer and veterinary access",
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "scripts": {
+    "install:all": "npm --prefix apps/api install && npm --prefix apps/web install",
+    "dev:api": "npm --prefix apps/api run dev",
+    "dev:web": "npm --prefix apps/web start",
+    "start:api": "npm --prefix apps/api run start",
+    "start:prod": "node apps/api/dist/server.js",
+    "migrate": "npm --prefix apps/api run migrate",
+    "seed": "npm --prefix apps/api run seed",
+    "seed:reset": "npm --prefix apps/api run seed -- --reset",
+    "test": "npm --prefix apps/api test",
+    "typecheck": "npm --prefix apps/api run typecheck",
+    "build:web": "npm --prefix apps/web run build",
+    "build:api": "npm --prefix apps/api run build",
+    "build": "npm run typecheck && npm run build:api && npm run build:web"
+  }
+}

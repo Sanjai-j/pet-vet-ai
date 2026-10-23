@@ -1,0 +1,65 @@
+# Render Blueprint — API only (free plan, ₹0).
+#
+# The Angular app lives on Cloudflare Pages and reaches this service through a
+# Pages Function that proxies /api/* and /ws, so Render never builds Angular.
+# That matters: the Angular production build peaks around 760 MB and a Render
+# Free instance only has 512 MB, so the single-service layout in
+# docs/DEPLOY_RENDER.md needs a paid instance, while this layout does not.
+#
+# Order of work (full walkthrough: docs/DEPLOY_FREE.md):
+#   1. Neon: create the project and copy its *pooled* connection string.
+#   2. Cloudflare Pages: deploy this repository, note https://<project>.pages.dev.
+#   3. Render → New → Blueprint → pick this repository, then paste DATABASE_URL
+#      (Neon) and WEB_ORIGIN (the Pages production origin) when prompted.
+#   4. After the first boot finishes: npm run create-admin --prefix apps/api -- …
+#
+# DATABASE_URL is deliberately not generated here: Render's own free Postgres is
+# deleted 30 days after creation, so an external Neon database is used instead.
+
+services:
+  - type: web
+    name: petvet-api
+    runtime: node
+    plan: free
+    region: singapore
+    # NODE_ENV=development for the install: Render applies service env vars to
+    # the build too, and `npm install` with NODE_ENV=production skips the
+    # devDependencies that tsc needs. Angular is not built here at all.
+    buildCommand: NODE_ENV=development npm --prefix apps/api install --no-audit --no-fund && npm --prefix apps/api run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: APP_TIMEZONE
+        value: Asia/Kolkata
+      # Reference catalogs only (species, breeds, food safety, vaccine
+      # schedules, knowledge, nutrition). Never accounts, pets or clinics; the
+      # seed skips itself once the catalogs exist, so redeploys leave real
+      # records alone.
+      - key: SEED_CATALOG
+        value: "true"
+      # Render Free has no persistent disk: uploads live in PostgreSQL bytea.
+      - key: FILE_STORAGE
+        value: db
+      # Keyless nearby-hospital search (OpenStreetMap). OSM requires a genuine
+      # contact address in the User-Agent: Nominatim answers 403 to addresses at
+      # example.com/example.test, which surfaces as "Address lookup failed".
+      - key: OVERPASS_ENABLED
+        value: "true"
+      - key: NOMINATIM_USER_AGENT
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      # Neon pooled connection string (sslmode=require). TLS is on by default in
+      # production; DATABASE_SSL=false is only for a local server without TLS.
+      - key: DATABASE_URL
+        sync: false
+      # The Cloudflare Pages production origin, e.g.
+      # https://petvet.pages.dev — CORS and the WebSocket origin check use it.
+      # Set it once Pages gives you the URL.
+      - key: WEB_ORIGIN
+        sync: false

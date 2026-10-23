@@ -1,0 +1,54 @@
+# Optional orchestration for local development with a real PostgreSQL server.
+# The app also runs with no Docker at all, using its embedded PostgreSQL engine
+# (PGlite) — see README "Quick start (no Docker)".
+#
+#   docker compose up -d postgres      # database only, then run the API locally
+#   docker compose up --build          # database + API (API also builds the Angular app)
+#
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: petvet-postgres
+    environment:
+      POSTGRES_USER: petvet
+      POSTGRES_PASSWORD: petvet
+      POSTGRES_DB: petvet
+    ports:
+      - "5432:5432"
+    volumes:
+      - petvet-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petvet -d petvet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: node:22-alpine
+    container_name: petvet-api
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgresql://petvet:petvet@postgres:5432/petvet
+      JWT_SECRET: change-this-development-secret-please-32chars
+      WEB_ORIGIN: http://localhost:4200
+      # Reference catalogs only (species, breeds, food safety, vaccine
+      # schedules, knowledge, nutrition). No accounts, pets or clinics.
+      SEED_CATALOG: "true"
+      LLM_PROVIDER: none
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./:/workspace
+    command: >
+      sh -c "npm --prefix apps/api install --no-fund --no-audit &&
+             npm --prefix apps/web install --no-fund --no-audit &&
+             npm --prefix apps/web run build &&
+             npm --prefix apps/api run start"
+
+volumes:
+  petvet-pgdata:
