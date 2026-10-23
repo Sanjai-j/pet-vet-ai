@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { getDb } from './db.js';
+import { connectDatabase, getDb, type Database } from './db.js';
 
-export async function migrate(): Promise<string[]> {
-  const db = await getDb();
+async function applyMigrations(db: Database): Promise<string[]> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       name text PRIMARY KEY,
@@ -31,4 +30,21 @@ export async function migrate(): Promise<string[]> {
   }
   if (!ran.length) console.log('[migrate] database is up to date');
   return ran;
+}
+
+export async function migrate(): Promise<string[]> {
+  // Neon's pooled endpoint (PgBouncer, transaction mode) does not keep session
+  // state, so schema changes go over the direct connection when one is given.
+  const directUrl = config.databaseUrlUnpooled;
+  // Only a PostgreSQL deployment has a second URL; the embedded PGlite engine
+  // (used by the test suite) has nothing to switch to.
+  if (config.databaseUrl && directUrl && directUrl !== config.databaseUrl) {
+    const db = await connectDatabase(directUrl);
+    try {
+      return await applyMigrations(db);
+    } finally {
+      await db.close();
+    }
+  }
+  return applyMigrations(await getDb());
 }

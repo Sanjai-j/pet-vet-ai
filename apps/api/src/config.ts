@@ -17,6 +17,17 @@ function bool(value: string | undefined, fallback = false): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
+/** True when a connection string asks for TLS (Neon's include sslmode=require). */
+function requiresTls(url: string | undefined): boolean {
+  if (!url) return false;
+  if (/[?&]sslmode=(require|verify-ca|verify-full)\b/i.test(url)) return true;
+  try {
+    return /(^|\.)neon\.tech$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export const config = {
   env: process.env.NODE_ENV ?? 'development',
   isProd: process.env.NODE_ENV === 'production',
@@ -26,9 +37,19 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET ?? 'dev-only-change-me-please-32-bytes-minimum',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '12h',
   databaseUrl: process.env.DATABASE_URL ?? '',
+  // Neon hands out a direct (unpooled) URL next to the pooled one. Migrations
+  // use the direct connection: the pooler is transaction-scoped and does not
+  // carry session state between statements. Falls back to DATABASE_URL.
+  databaseUrlUnpooled: process.env.DATABASE_URL_UNPOOLED ?? '',
   // Neon and Supabase require TLS; a self-hosted Postgres may not support it.
-  // Production defaults to TLS, and DATABASE_SSL=false turns it off.
-  databaseSsl: bool(process.env.DATABASE_SSL, process.env.NODE_ENV === 'production'),
+  // TLS is on in production, and also whenever the connection string asks for
+  // it (Neon's carry sslmode=require), so local runs against Neon work too.
+  databaseSsl: bool(
+    process.env.DATABASE_SSL,
+    process.env.NODE_ENV === 'production' ||
+      requiresTls(process.env.DATABASE_URL) ||
+      requiresTls(process.env.DATABASE_URL_UNPOOLED),
+  ),
   pgliteDir: path.resolve(ROOT, process.env.PGLITE_DIR ?? '.data/pg'),
   // When using the embedded PGlite engine, expose it over the PostgreSQL
   // wire protocol so desktop tools (pgAdmin 4, DBeaver, psql) can connect.

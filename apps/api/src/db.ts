@@ -52,18 +52,41 @@ class PostgresDatabase implements Database {
   }
 }
 
+/**
+ * Open a verified pool for one connection string. Used by the app with the
+ * pooled URL, and by migrations with the direct (unpooled) one.
+ */
+export async function connectDatabase(url: string): Promise<Database> {
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: 10,
+    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
+  });
+  // Neon suspends an idle compute, so the first connect can race its resume.
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      await pool.query('SELECT 1');
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+    }
+  }
+  if (lastError) {
+    await pool.end().catch(() => {});
+    throw lastError;
+  }
+  console.log(`[db] connected to PostgreSQL (${url.replace(/\/\/[^@]*@/, '//***@')})`);
+  return new PostgresDatabase(pool);
+}
+
 export async function getDb(): Promise<Database> {
   if (database) return database;
 
   if (config.databaseUrl) {
-    const pool = new pg.Pool({
-      connectionString: config.databaseUrl,
-      max: 10,
-      ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
-    });
-    await pool.query('SELECT 1');
-    database = new PostgresDatabase(pool);
-    console.log(`[db] connected to PostgreSQL (${config.databaseUrl.replace(/\/\/[^@]*@/, '//***@')})`);
+    database = await connectDatabase(config.databaseUrl);
   } else {
     fs.mkdirSync(config.pgliteDir, { recursive: true });
     const client = new PGlite(config.pgliteDir);

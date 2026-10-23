@@ -99,7 +99,25 @@ committed. Never commit `.dev.vars` either (it is ignored after step 6).
    ```
 
 3. Keep it for the Render step. The API migrates the schema itself on first
-   boot (`db/migrations/001…005`), so there is nothing to run here.
+   boot (`db/migrations/001…005`), so there is nothing to run here. If you also
+   copy the **direct** (non-`-pooler`) URL into `DATABASE_URL_UNPOOLED`, the
+   migrations run over that connection while normal queries stay pooled;
+   without it they fall back to `DATABASE_URL`.
+
+### Optional: `neon.ts` + the Neon CLI
+
+The repository also carries a Neon branch policy in [neon.ts](../neon.ts) and
+the CLI link file `.neon` (git-ignored):
+
+```bash
+neon link --project-id winter-haze-48490845 --branch production -y
+neon config plan    # read-only diff
+neon deploy         # apply neon.ts and pull DATABASE_URL(_UNPOOLED) into .env
+```
+
+`neon deploy` writes both connection strings into the git-ignored `.env`, which
+is what local development and `npm run create-admin` read. Render still needs
+`DATABASE_URL` (and optionally `DATABASE_URL_UNPOOLED`) set in its dashboard.
 
 Neon's free plan gives 0.5 GB of storage and suspends the compute when idle; the
 first query after idle reconnects automatically through the pool.
@@ -141,6 +159,7 @@ Environment variables:
 | `NODE_ENV` | `production` | enables TLS for Postgres and strict config checks |
 | `JWT_SECRET` | Render → **Generate** (or a 48-byte random hex string) | never commit it |
 | `DATABASE_URL` | Neon **pooled** URL | secret |
+| `DATABASE_URL_UNPOOLED` | Neon **direct** URL (optional) | when set, migrations use it; app traffic keeps using the pooled URL |
 | `WEB_ORIGIN` | `https://<project>.pages.dev` | exact origin, no trailing slash |
 | `FILE_STORAGE` | `db` | uploads survive restarts |
 | `SEED_CATALOG` | `true` | reference catalogs only, no accounts or pets |

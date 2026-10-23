@@ -20,5 +20,9 @@
     "build:web": "npm --prefix apps/web run build",
     "build:api": "npm --prefix apps/api run build",
     "build": "npm run typecheck && npm run build:api && npm run build:web"
+  },
+  "dependencies": {
+    "@neon/config": "^1.9.3",
+    "@neon/env": "^1.6.4"
   }
 }
