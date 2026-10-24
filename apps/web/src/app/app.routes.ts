@@ -8,6 +8,18 @@ export const routes: Routes = [
     title: 'Sign in — Pet Vet AI',
   },
   {
+    path: 'forgot-password',
+    loadComponent: () =>
+      import('./pages/forgot-password.component').then((m) => m.ForgotPasswordComponent),
+    title: 'Reset your password — Pet Vet AI',
+  },
+  {
+    path: 'reset-password',
+    loadComponent: () =>
+      import('./pages/reset-password.component').then((m) => m.ResetPasswordComponent),
+    title: 'Choose a new password — Pet Vet AI',
+  },
+  {
     path: 'register',
     loadComponent: () => import('./pages/register.component').then((m) => m.RegisterComponent),
     title: 'Create an account — Pet Vet AI',

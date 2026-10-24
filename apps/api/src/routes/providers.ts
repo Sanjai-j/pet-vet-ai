@@ -5,6 +5,7 @@ import { many, one } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { haversineKm } from '../util.js';
+import { emailConfigured } from '../services/email.js';
 
 export const providersRouter = Router();
 
@@ -137,7 +138,8 @@ providersRouter.get('/config/public', (_req, res) => {
     // 'google_places' when a key is present, otherwise the free
     // OpenStreetMap lookup, or 'disabled' when that has been turned off.
     nearbyProvider: config.maps.apiKey ? 'google_places' : config.nearby.enabled ? 'openstreetmap' : 'disabled',
-    emailConfigured: Boolean(config.smtp.host),
+    // True for either transport: an HTTPS email API (production) or SMTP.
+    emailConfigured: emailConfigured(),
     pushConfigured: Boolean(config.push.publicKey && config.push.privateKey),
     turnConfigured: Boolean(config.webrtc.turnUrl),
     disclaimer: 'Pet Vet AI is decision support and care coordination, not a veterinary diagnosis service.',

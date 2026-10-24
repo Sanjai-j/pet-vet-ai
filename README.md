@@ -170,13 +170,22 @@ Copy `.env.example` → `.env`. Nothing is required for local development.
 | `AI_MAX_MESSAGES_PER_DAY` | Per-owner AI message cap | `80` |
 | `EXA_API_KEY` | **Server** key for the live web-search panel on the AI page; never sent to the browser | *(empty → panel shows setup guidance)* |
 | `UPLOAD_DIR`, `MAX_UPLOAD_MB` | Private media storage | `uploads`, `10` |
-| `SMTP_*`, `EMAIL_FROM` | Optional email reminders | disabled |
+| `EMAIL_PROVIDER` | `brevo`/`resend` send over HTTPS; `smtp` uses the settings below; empty ⇒ SMTP when `SMTP_HOST` is set | off |
+| `EMAIL_API_KEY`, `EMAIL_FROM` | HTTPS email API key and the verified sender (`Name <address>`) | — |
+| `SMTP_*` | Optional SMTP delivery for local development | disabled |
 | `VAPID_*` | Optional browser push keys | disabled |
 | `GOOGLE_MAPS_API_KEY`, `GOOGLE_MAPS_MAP_ID` | Optional maps provider | disabled (offline geo + deep links) |
 | `WEBRTC_STUN_URLS`, `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` | WebRTC ICE configuration | public STUN only |
 
 Secrets stay server-side. The browser never receives an SMTP password, LLM key or TURN
 credential; TURN credentials are handed out only to authenticated consultation participants.
+
+Password reset links are emailed, and email is the one integration a hosting choice can break:
+Render's free web services block outbound SMTP (ports 25, 465, 587), so Gmail-style SMTP
+accounts cannot deliver from there. `EMAIL_PROVIDER=brevo` (or `resend`) sends over HTTPS on
+port 443 instead. Setup: [Deploy for ₹0 → Turn on email](docs/DEPLOY_FREE.md#6-turn-on-email-and-password-resets).
+Without a configured transport the API reports `emailConfigured: false` and the
+forgot-password screen says plainly that no mail could be sent.
 
 | `GOOGLE_MAPS_API_KEY` | **Server** key for Places API (New) + Geocoding. Never sent to the browser | *(empty → free OpenStreetMap lookup)* |
 | `GOOGLE_MAPS_BROWSER_KEY` | Optional Maps JavaScript key; only with HTTP-referrer restrictions | *(empty)* |
@@ -441,7 +450,8 @@ clinical accuracy claim — none is made.
 | Chat doesn't update live | WebSocket blocked (proxy/corporate network). The UI falls back to an HTTP send; check the "Live connection" badge on Messages. |
 | Video says "STUN only" / call fails on mobile data | Configure `TURN_URL` + credentials. Carrier-grade NAT needs TURN. |
 | Camera denied or prompt never appears | Browser permission for `localhost`/HTTPS; the room now times out after 20s with a clear message instead of hanging. |
-| Reminders never arrive | Reminders are opt-in per category in **Settings → Care reminders**. Email/push also need SMTP/VAPID configured. |
+| Reminders never arrive | Reminders are opt-in per category in **Settings → Care reminders**. Email/push also need `EMAIL_PROVIDER`+`EMAIL_API_KEY` (or SMTP) and VAPID configured. |
+| Forgot-password says no email was sent | The API has no email transport, or the provider refused it. Check Render logs for `[email] …`; on Render free, SMTP ports are blocked — use `EMAIL_PROVIDER=brevo`. |
 | `seed` says reference catalogs already exist | Intentional idempotency: it skips once species are loaded. Use `npm run seed:reset` to rebuild catalogs (this deletes all data, including accounts). |
 | PGlite errors after running a second process against the same directory | PGlite is single-process. Stop the API before running `migrate`/`seed`, or use a real PostgreSQL server. |
 
@@ -478,7 +488,8 @@ Deploying anywhere else — minimum path:
    PostgreSQL (required on hosts without a persistent disk, e.g. Render's free plan). Either
    way uploads are only served through the access-checked `/api/files/:id` endpoint. Back up the
    database.
-6. Optional: `SMTP_*`, `VAPID_*`, `LLM_*`, `TURN_*`, `GOOGLE_MAPS_*`.
+6. Optional: `EMAIL_PROVIDER`/`EMAIL_API_KEY` (password reset + reminder email), `SMTP_*`,
+   `VAPID_*`, `LLM_*`, `TURN_*`, `GOOGLE_MAPS_*`.
 7. No demo accounts exist: the seed ships catalogs only. After the first deploy, run
    `npm run create-admin --prefix apps/api -- you@example.com "password"` against the production
    database to create the administrator who can approve credentials.

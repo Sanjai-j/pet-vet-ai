@@ -106,13 +106,23 @@ export const config = {
     // Never sent to the browser.
     apiKey: process.env.EXA_API_KEY ?? '',
   },
+  // Outbound email. EMAIL_PROVIDER picks the transport: 'brevo' or 'resend'
+  // send over HTTPS (the only option on Render free, which blocks SMTP ports),
+  // 'smtp' uses the settings below. Empty falls back to SMTP when SMTP_HOST is
+  // set, so existing local setups keep working unchanged.
+  email: {
+    provider: (process.env.EMAIL_PROVIDER ?? '').trim().toLowerCase(),
+    apiKey: process.env.EMAIL_API_KEY ?? '',
+    // The verified sender. Brevo and Resend both accept "Name <address>".
+    from: process.env.EMAIL_FROM ?? 'Pet Vet AI <no-reply@petvet.local>',
+  },
   smtp: {
     host: process.env.SMTP_HOST ?? '',
     port: Number(process.env.SMTP_PORT ?? 587),
     secure: bool(process.env.SMTP_SECURE, false),
     user: process.env.SMTP_USER ?? '',
     pass: process.env.SMTP_PASS ?? '',
-    from: process.env.EMAIL_FROM ?? 'Pet Vet AI <no-reply@petvet.local>',
+    // The sender address lives in `email.from` — one place for both transports.
   },
   push: {
     publicKey: process.env.VAPID_PUBLIC_KEY ?? '',

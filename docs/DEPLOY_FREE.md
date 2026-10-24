@@ -252,7 +252,58 @@ Owners and veterinarians then register themselves at `/register`.
 
 ---
 
-## 6. Verify the deployment
+## 6. Turn on email and password resets
+
+Forgot-password is built in and needs no third-party login, but it does need a
+way to send mail. **A Gmail account cannot deliver it from Render:** free web
+services block outbound traffic to SMTP ports 25, 465 and 587 ([Render
+changelog](https://render.com/changelog/free-web-services-will-no-longer-allow-outbound-traffic-to-smtp-ports)),
+and every Gmail SMTP setting uses one of them. Mail therefore leaves over
+HTTPS, on port 443.
+
+### Brevo — free, 300 emails/day
+
+1. Create an account at <https://www.brevo.com>. No card is required.
+2. **Senders & IPs → Senders → Add a sender**: add the address mail should come
+   from, then confirm the code Brevo emails you. One verified address is
+   enough — no domain purchase, no DNS records.
+3. **SMTP & API → API Keys → Create a new API key** (v3). Copy it once; it is
+   not shown again.
+4. Render → **petvet-api → Environment → Add Environment Variable**:
+
+   | Key | Value |
+   | --- | --- |
+   | `EMAIL_PROVIDER` | `brevo` |
+   | `EMAIL_API_KEY` | the key from step 3 (secret — never in the repo, never in the browser) |
+   | `EMAIL_FROM` | `Pet Vet AI <the address you verified in step 2>` |
+
+   Save; Render redeploys the API automatically.
+5. Check it took: `curl -s https://<project>.pages.dev/api/config/public` now
+   reports `"emailConfigured": true`.
+6. On the site: **Sign in → Forgot your password?** → submit the address → the
+   message arrives → the link opens `/reset-password` → choose a new password →
+   sign in with it. The link works once and expires in 30 minutes.
+
+If nothing arrives, the reason is in Render → **Logs**: a rejected sender or a
+wrong key logs as `[email] brevo returned 4xx: …`. The API never stores the raw
+reset token (only its SHA-256 hash), so a database dump cannot be used to reset
+accounts.
+
+### Other transports
+
+| Setting | Use it when |
+| --- | --- |
+| `EMAIL_PROVIDER=resend` | You prefer Resend's API. Without a verified domain it only delivers to the address that owns the Resend account, so it is a testing transport until you own a domain |
+| `EMAIL_PROVIDER=smtp` + `SMTP_*` | Local development, or a host that does not block SMTP |
+| *nothing set* | Email is off. `/api/config/public` says `emailConfigured: false` and the forgot-password screen says no mail was sent instead of pretending |
+
+Two limits worth knowing: a reset does not sign out a device that is already
+signed in (its JWT stays valid until `JWT_EXPIRES_IN`, 12 h by default), and the
+request throttle is per API instance, so it resets when Render restarts.
+
+---
+
+## 7. Verify the deployment
 
 **Quick checks**
 
@@ -333,12 +384,13 @@ what the API sent — it never substitutes the SPA, which is what matters here.
 **Still to verify on the deployed URLs** (impossible from a local machine): the
 Render build/start of this repository, Neon connectivity with TLS on, Cloudflare's
 production WebSocket tunnel (local `workerd` is not proof of the edge behaviour),
-Render cold starts after idle, and the Pages build settings themselves. Section 6
-is the checklist for those.
+Render cold starts after idle, and the Pages build settings themselves. Section 7
+is the checklist for those. Password reset needs a real inbox, so it is verified
+on the live site after section 6.
 
 ---
 
-## 7. Free-tier limits to expect
+## 8. Free-tier limits to expect
 
 | Service | Free limits that matter here |
 | --- | --- |
@@ -353,7 +405,7 @@ free plan, the next-cheapest fix is a Render Starter instance for the API alone
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -369,6 +421,9 @@ free plan, the next-cheapest fix is a Render Starter instance for the API alone
 | Find care says it could not reach OpenStreetMap | Both public Overpass mirrors are saturated or refuse the request | Retry in a minute; city/town searches also use Nominatim, which usually answers |
 | Photos vanish after a restart | `FILE_STORAGE` not `db` when they were uploaded | Set `FILE_STORAGE=db`, restart; older rows have no bytes stored |
 | Admin command: `relation "users" does not exist` | Run before the API's first boot | Deploy first, then run it |
+| Forgot-password answers "No email was sent" | No `EMAIL_PROVIDER`/`EMAIL_API_KEY` (or SMTP) on the API | Follow section 6 |
+| Reset mail never arrives, logs show `brevo returned 401/400` | Wrong API key, or `EMAIL_FROM` is not a verified sender | Recheck both in Brevo, then save Render's env (it redeploys) |
+| Reset mail arrives but the link 404s | `WEB_ORIGIN` is not the site's origin, so the link points elsewhere | Set `WEB_ORIGIN` to `https://<project>.pages.dev` and redeploy the API |
 | CORS error in the console | The app is calling the API cross-origin (someone rebuilt with a different base URL) | Keep the same-origin `/api` calls; the proxy exists so this never happens |
 | Deep link 404 | A `404.html` was added to the build output, which disables Pages' SPA fallback | Remove it |
 

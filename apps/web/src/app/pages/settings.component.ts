@@ -64,7 +64,7 @@ import { ToastService } from '../core/toast.service';
             <mat-slide-toggle [ngModel]="pref('inApp')" (ngModelChange)="setPref('inApp', $event)"></mat-slide-toggle>
           </div>
           <div class="switch-row">
-            <div><strong>Email notifications</strong><p>{{ config()?.emailConfigured ? 'SMTP is configured on this server.' : 'SMTP is not configured on this server — email will not be delivered.' }}</p></div>
+            <div><strong>Email notifications</strong><p>{{ config()?.emailConfigured ? 'Email delivery is configured on this server.' : 'Email delivery is not configured on this server — email will not be delivered.' }}</p></div>
             <mat-slide-toggle [ngModel]="pref('email')" (ngModelChange)="setPref('email', $event)" [disabled]="!config()?.emailConfigured"></mat-slide-toggle>
           </div>
           <div class="switch-row">

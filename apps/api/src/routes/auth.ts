@@ -6,6 +6,11 @@ import { getDb, one } from '../db.js';
 import { audit } from '../audit.js';
 import { hashPassword, requireAuth, signToken, verifyPassword, type AuthUser } from '../auth.js';
 import { parseJson } from '../util.js';
+import {
+  requestPasswordReset,
+  resetPasswordWithToken,
+  verifyResetToken,
+} from '../services/password-reset.js';
 
 export const authRouter = Router();
 
@@ -234,6 +239,50 @@ authRouter.patch(
     ]);
     await audit(req.user!.id, 'notifications.prefs', 'user', req.user!.id, body);
     res.json({ notificationPrefs: prefs });
+  }),
+);
+
+/**
+ * Password reset, step 1: ask for a link.
+ *
+ * The response never says whether the address has an account. `delivery`
+ * describes the server's email setup, not the account: 'skipped' means this
+ * deployment has no email transport, 'failed' means the provider refused it.
+ */
+authRouter.post(
+  '/forgot-password',
+  asyncHandler(async (req, res) => {
+    const body = parse(z.object({ email: z.string().email('Enter a valid email address').max(200) }), req.body);
+    const result = await requestPasswordReset(body.email, req.ip ?? null);
+    res.json({ ok: true, delivery: result.delivery });
+  }),
+);
+
+/** Whether a reset link is still usable — the reset screen calls this on load. */
+authRouter.get(
+  '/reset-password/:token',
+  asyncHandler(async (req, res) => {
+    const token = String(req.params.token ?? '');
+    res.json(await verifyResetToken(token));
+  }),
+);
+
+/** Password reset, step 2: spend the token and set a new password. */
+authRouter.post(
+  '/reset-password',
+  asyncHandler(async (req, res) => {
+    const body = parse(
+      z.object({
+        token: z.string().min(10).max(200),
+        newPassword: z.string().min(8, 'Use at least 8 characters').max(128),
+      }),
+      req.body,
+    );
+    // A valid token cannot be guessed, but this keeps a stuck client from
+    // hammering the endpoint.
+    throttle(`reset:${req.ip}`);
+    await resetPasswordWithToken(body.token, body.newPassword);
+    res.json({ ok: true });
   }),
 );
 

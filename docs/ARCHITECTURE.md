@@ -21,7 +21,7 @@ later without changing the frontend or the database.
 | SignalR / WebSockets | `src/ws.ts` | Authenticated chat, notification fan-out, WebRTC signalling, typing, read receipts |
 | WebRTC | `apps/web/.../video-room.component.ts` + `ws.ts` relay + `routes/providers.ts` (`/config/webrtc`) | Peer-to-peer media with STUN/TURN configuration and authorization |
 | Maps provider | `routes/providers.ts` + `find-care.component.ts` | Geo search over the directory (haversine) and "Open in Maps" deep links; a maps API key is optional |
-| Push / email | `services/notifications.ts` | In-app always; optional web-push (VAPID) and SMTP email, each reporting delivery honestly |
+| Push / email | `services/notifications.ts`, `services/email.ts`, `services/password-reset.ts` | In-app always; optional web-push (VAPID) and email over an HTTPS API (Brevo/Resend) or SMTP, each reporting delivery honestly. Password reset issues a hashed, single-use, 30-minute link |
 | Media storage | `routes/files.ts` | Authenticated upload/download, ownership checks, private storage directory (swap for object storage) |
 | Docker Compose | `docker-compose.yml` | Optional PostgreSQL + API orchestration; the app also runs with neither Docker nor a database server |
 

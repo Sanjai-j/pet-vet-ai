@@ -867,3 +867,74 @@ test('approving a schedule row publishes it to the knowledge index; re-queueing 
   );
   assert.equal(afterRequeue.length, 0, 'an unreviewed row is not citable again');
 });
+
+test('a reset link is single-use and replaces the password', async () => {
+  const { issueResetToken } = await import('../src/services/password-reset.js');
+  const { one } = await import('../src/db.js');
+
+  // An address with no account answers exactly like a real one. In tests no
+  // email transport is configured, so the honest answer is `skipped`.
+  const unknown = await call('/auth/forgot-password', {
+    method: 'POST',
+    body: { email: 'nobody@example.test' },
+  });
+  assert.equal(unknown.status, 200);
+  assert.equal(unknown.data.delivery, 'skipped');
+
+  const invalidAddress = await call('/auth/forgot-password', {
+    method: 'POST',
+    body: { email: 'not-an-email' },
+  });
+  assert.equal(invalidAddress.status, 400);
+
+  const account = await one<{ id: string }>(
+    'SELECT id FROM users WHERE lower(email) = $1',
+    ['second.owner@example.test'],
+  );
+  assert.ok(account);
+
+  // The mail itself cannot be read back from the database (only its hash is
+  // stored), so the test asks the service for the token it would have emailed.
+  const token = await issueResetToken(account.id, '127.0.0.1');
+
+  const check = await call(`/auth/reset-password/${encodeURIComponent(token)}`);
+  assert.equal(check.status, 200);
+  assert.equal(check.data.valid, true);
+
+  const weak = await call('/auth/reset-password', {
+    method: 'POST',
+    body: { token, newPassword: 'short' },
+  });
+  assert.equal(weak.status, 400, 'a password under 8 characters is refused');
+
+  const changed = await call('/auth/reset-password', {
+    method: 'POST',
+    body: { token, newPassword: 'BrandNewPass123' },
+  });
+  assert.equal(changed.status, 200);
+
+  const oldPassword = await call('/auth/login', {
+    method: 'POST',
+    body: { email: 'second.owner@example.test', password: 'StrongPass123' },
+  });
+  assert.equal(oldPassword.status, 401, 'the old password no longer signs in');
+
+  const newPassword = await call('/auth/login', {
+    method: 'POST',
+    body: { email: 'second.owner@example.test', password: 'BrandNewPass123' },
+  });
+  assert.equal(newPassword.status, 200, 'the new password does');
+  owner2Token = newPassword.data.token;
+
+  const replayed = await call('/auth/reset-password', {
+    method: 'POST',
+    body: { token, newPassword: 'AnotherPass456' },
+  });
+  assert.equal(replayed.status, 400, 'the same link cannot be used twice');
+
+  const bogus = await call('/auth/reset-password', {
+    method: 'POST',
+    body: { token: 'x'.repeat(43), newPassword: 'AnotherPass456' },
+  });
+  assert.equal(bogus.status, 400, 'an unknown token is refused');
+});

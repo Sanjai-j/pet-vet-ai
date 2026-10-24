@@ -45,6 +45,17 @@ services:
       # Render Free has no persistent disk: uploads live in PostgreSQL bytea.
       - key: FILE_STORAGE
         value: db
+      # Password-reset and reminder email. Render Free blocks outbound SMTP
+      # (ports 25/465/587), so the API must send over an HTTPS email API:
+      # EMAIL_PROVIDER=brevo (free 300/day, one verified sender, no domain) or
+      # resend. Step-by-step: docs/DEPLOY_FREE.md §6. Leaving these empty is
+      # safe — the app reports emailConfigured:false instead of pretending.
+      - key: EMAIL_PROVIDER
+        sync: false
+      - key: EMAIL_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       # Keyless nearby-hospital search (OpenStreetMap). OSM requires a genuine
       # contact address in the User-Agent: Nominatim answers 403 to addresses at
       # example.com/example.test, which surfaces as "Address lookup failed".

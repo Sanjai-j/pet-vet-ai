@@ -181,6 +181,10 @@ import { ApiService } from '../core/api.service';
               }
             </mat-form-field>
 
+            <p class="small" style="margin:-.35rem 0 0;text-align:right">
+              <a routerLink="/forgot-password">Forgot your password?</a>
+            </p>
+
             <button mat-flat-button color="primary" type="submit" class="w-full" [disabled]="loading()">
               @if (loading()) { <span class="spinner" style="border-top-color:#fff"></span> }
               {{ loading() ? 'Signing in…' : 'Sign in' }}

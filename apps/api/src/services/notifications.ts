@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import nodemailer from 'nodemailer';
 import webpush from 'web-push';
 import { getDb, id } from '../db.js';
 import { config } from '../config.js';
@@ -14,22 +13,9 @@ export interface NotificationInput {
   link?: string | null;
 }
 
-let mailer: nodemailer.Transporter | null | undefined;
-
-function getMailer(): nodemailer.Transporter | null {
-  if (mailer !== undefined) return mailer;
-  if (!config.smtp.host) {
-    mailer = null;
-    return mailer;
-  }
-  mailer = nodemailer.createTransport({
-    host: config.smtp.host,
-    port: config.smtp.port,
-    secure: config.smtp.secure,
-    auth: config.smtp.user ? { user: config.smtp.user, pass: config.smtp.pass } : undefined,
-  });
-  return mailer;
-}
+// Email lives in its own module because it must work over an HTTPS API as well
+// as SMTP; re-exported here so existing callers keep importing it from here.
+export { sendEmail } from './email.js';
 
 let vapidReady = false;
 function ensureVapid(): boolean {
@@ -61,19 +47,6 @@ export async function createNotification(input: NotificationInput) {
   const notification = row[0];
   notificationEvents.emit('notification', { userId: input.userId, notification });
   return notification;
-}
-
-/** Returns whether the email was actually accepted by a configured SMTP server. */
-export async function sendEmail(to: string, subject: string, text: string): Promise<{ delivered: boolean; reason?: string }> {
-  const transport = getMailer();
-  if (!transport) return { delivered: false, reason: 'smtp_not_configured' };
-  try {
-    await transport.sendMail({ from: config.smtp.from, to, subject, text });
-    return { delivered: true };
-  } catch (err) {
-    console.warn('[email] delivery failed', (err as Error).message);
-    return { delivered: false, reason: 'smtp_delivery_failed' };
-  }
 }
 
 export async function sendPush(
