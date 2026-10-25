@@ -92,7 +92,10 @@ const RULES: EmergencyRule[] = [
     id: 'vomiting',
     species: ['dog', 'cat', 'bird', 'cow', 'goat', 'other'],
     label: 'Persistent vomiting or vomiting with blood',
-    pattern: /vomit(?!ing\b.{0,40}(sign|watch|monitor))|throw(?:ing|s)? up|threw up|puk(?:e|es|ed|ing)|barf(?:s|ed|ing)?|coffee[- ]?ground (vomit|stool)|blood in (the )?vomit|can.?t keep (water|food|anything) down|cannot keep (water|food|anything) down/i,
+    // Reported events only. The bare word "vomit" used to fire this rule,
+    // so "what should I watch for after vaccination? Vomiting?" escalated as
+    // if the animal were already vomiting.
+    pattern: /\b(?:vomited|is vomiting|was vomiting|keeps? vomiting|keep vomiting|has been vomiting|have been vomiting|started vomiting|vomiting (?:repeatedly|constantly|all (?:night|day)|every|since|for|with blood|after)|blood in (?:the )?vomit|coffee[- ]?ground (?:vomit|stool)|throwing up|threw up|puked|puking|barfed|barfing|can.?t keep (?:water|food|anything) down|cannot keep (?:water|food|anything) down)\b/i,
     advice: 'Repeated vomiting, vomit containing blood, or vomiting that will not settle can be serious and dehydrate small animals quickly. Do not give human medicines and do not induce vomiting. Contact a veterinarian today; go to an emergency hospital if the vomiting is repeated over hours, the vomit contains blood, or the animal also collapses, cannot stand, or has a painful, swollen belly.',
   },
   {
@@ -124,13 +127,57 @@ export interface EmergencyMatch {
   advice: string;
 }
 
-export function detectEmergency(text: string, speciesCode: string): EmergencyMatch | null {
+/**
+ * "What if my dog ate chocolate?" asks about a risk; "my dog ate chocolate"
+ * reports an exposure. Only the second needs emergency instructions, and
+ * treating the first as an incident trains owners to ignore the banner.
+ *
+ * A conditional is only counterfactual when the owner does not already
+ * suspect it happened — "I'm not sure if my dog ate chocolate" is a real
+ * possible exposure and must still escalate.
+ */
+const CONDITIONAL =
+  /\bwhat if\b|\bif (?:my|the|he|she|it|they|your)\b[^.!?]{0,40}\b(?:eats?|ate|drinks?|drank|gets?|got|swallows?|swallowed|has|had)\b|\bwould (?:it|that|this) be\b|\bis it (?:safe|okay|ok|normal) (?:to|if)\b/i;
+const KNOWN_OR_SUSPECTED = /\b(?:don'?t know|do not know|not sure|unsure|wonder\w*|whether|maybe|might have|possibly|i think|i suspect|think (?:he|she|it|they))\b/i;
+
+/**
+ * A general question about a hazard ("which foods are toxic?", "is chocolate
+ * safe for cats?") is information-seeking, not a report that it happened.
+ * Without this, every food-safety question opened with an emergency banner,
+ * which is how real emergencies stop being noticed.
+ *
+ * Suppression is deliberately narrow: the message must be a question, must not
+ * refer to the owner's own animal ("my", "our", "his", "her", "their", 's),
+ * and must actually use hazard vocabulary. "Did he eat chocolate?" therefore
+ * still escalates — the owner does not know, so neither do we.
+ */
+const ADVISORY = /\b(?:toxic|poisonous|dangerous|harmful|safe|unsafe|which foods?|what foods?|warning signs?|signs of|symptoms of|prevent)\b/i;
+const QUESTION_OPENING = /^\s*(?:what|which|is|are|can|could|should|how|when|why|do|does|did|will|would)\b/i;
+const OWN_ANIMAL = /\b(?:my|our|his|her|their)\b|'s\b/i;
+
+function isCounterfactual(normalized: string, index: number, petName: string): boolean {
+  const window = normalized.slice(Math.max(0, index - 90), index);
+  if (CONDITIONAL.test(window) && !KNOWN_OR_SUSPECTED.test(window)) return true;
+  // A question that names this pet ("is chocolate safe for Bruno to eat?")
+  // is about a real animal in front of the owner, not a general query.
+  if (petName.length >= 2 && normalized.includes(petName)) return false;
+  const informational = QUESTION_OPENING.test(normalized) && !OWN_ANIMAL.test(normalized) && ADVISORY.test(normalized);
+  return informational;
+}
+
+export function detectEmergency(
+  text: string,
+  speciesCode: string,
+  petName?: string | null,
+): EmergencyMatch | null {
   const normalized = text.toLowerCase();
+  const name = (petName ?? '').trim().toLowerCase();
   for (const rule of RULES) {
     if (!rule.species.includes(speciesCode)) continue;
-    if (rule.pattern.test(normalized)) {
-      return { ruleId: rule.id, label: rule.label, advice: rule.advice };
-    }
+    const match = rule.pattern.exec(normalized);
+    if (!match) continue;
+    if (isCounterfactual(normalized, match.index, name)) continue;
+    return { ruleId: rule.id, label: rule.label, advice: rule.advice };
   }
   return null;
 }

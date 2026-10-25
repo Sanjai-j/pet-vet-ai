@@ -4,7 +4,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import { config, ROOT } from './config.js';
-import { getDb } from './db.js';
+import { getDb, one } from './db.js';
 import { errorMiddleware } from './errors.js';
 import { authRouter } from './routes/auth.js';
 import { catalogRouter } from './routes/catalog.js';
@@ -63,10 +63,22 @@ export function createApp() {
     } catch {
       dbOk = false;
     }
+    // Configuration alone cannot explain a deterministic reply: the admin
+    // switch in the database can silence a perfectly configured model. Report
+    // it next to the configuration so the two are never confused again.
+    let llmEnabledByAdmin: boolean | null = null;
+    try {
+      const row = await one<{ value: { llmEnabled?: boolean } }>(
+        `SELECT value FROM settings WHERE key = 'ai'`,
+      );
+      llmEnabledByAdmin = row ? row.value?.llmEnabled !== false : null;
+    } catch {
+      llmEnabledByAdmin = null;
+    }
     res.status(dbOk ? 200 : 503).json({
       status: dbOk ? 'ok' : 'degraded',
       database: dbOk ? 'ok' : 'unavailable',
-      ai: aiRuntimeInfo(),
+      ai: { ...aiRuntimeInfo(), llmEnabledByAdmin },
       timezone: config.timezone,
       time: new Date().toISOString(),
       version: '1.0.0',

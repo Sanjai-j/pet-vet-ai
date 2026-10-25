@@ -161,7 +161,14 @@ const GUIDANCE_SELECT = `
   FROM nutrition_guidance g
   LEFT JOIN nutrition_sources s ON s.id = g.source_id AND s.review_status = 'approved'`;
 
-export async function approvedGuidanceForPet(pet: PetRow, stage: PetLifeStage): Promise<GuidanceRow[]> {
+/**
+ * The fields the nutrition lookups actually read. Narrowing it here lets the
+ * feeding planner reuse these queries for a pet it has already loaded and
+ * authorised, without inventing a full PetRow.
+ */
+export type NutritionSubject = Pick<PetRow, 'speciesCode' | 'breedName' | 'customBreed' | 'ageEstimateMonths'>;
+
+export async function approvedGuidanceForPet(pet: NutritionSubject, stage: PetLifeStage): Promise<GuidanceRow[]> {
   const stages: LifeStage[] = stage === 'unknown' ? ['all'] : [stage as LifeStage, 'all'];
   const breed = pet.breedName ?? pet.customBreed ?? null;
   return many<GuidanceRow>(
@@ -208,7 +215,7 @@ export async function approvedRecipes(speciesCode: string): Promise<RecipeRow[]>
 }
 
 export async function approvedBreedGuidance(
-  pet: PetRow, stage: PetLifeStage,
+  pet: NutritionSubject, stage: PetLifeStage,
 ): Promise<BreedGuidanceRow | null> {
   const breed = pet.breedName ?? pet.customBreed ?? null;
   if (!breed || stage === 'unknown') return null;

@@ -73,13 +73,16 @@ Everything a chat question touches, in order. When you ask *"When is Bruno's rab
    - `retrieveSources` scores approved `knowledge_chunks` against the question with TF-IDF over a normalised vocabulary; only scores ≥ `MIN_RELEVANCE_SCORE` are returned.
    - `retrieveNutritionForChat` adds what lexical search cannot: approved nutrition rows filtered by species, life stage, breed and recorded conditions.
    - Approved vaccination schedule rows are mirrored into the same corpus by [vaccine-rag.ts](apps/api/src/services/vaccine-rag.ts), so vaccine questions can cite the reviewed workbook row.
-5. **Answer** — back in [ai.ts](apps/api/src/services/ai.ts)
-   - No sources + relevant record lines → `recordAnswer` (record facts only, no clinical interpretation).
-   - No sources + nothing relevant → refuse and refer to a veterinarian.
-   - Sources + LLM configured (`llmEnabled` and a provider key) → `systemPrompt` (rules + pet record + numbered sources) → `llmComplete`.
-   - Otherwise → `demoAnswer`: record lines plus the cited snippets, explicitly labelled as generated without a language model.
+5. **Whose animal is this?** — [profile-match.ts](apps/api/src/services/profile-match.ts)
+   - `detectProfileConflict(pet, message)` compares the species, breed, age and weight *in the question* with the selected pet. A Labrador question asked while a Persian cat is selected is a conflict; a plural general question ("which foods are toxic to dogs?") is not.
+   - On a conflict the reply is a clarification (`modeReason: 'profile_mismatch'`, `needsClarification: true`) and **nothing is calculated** — a portion computed from the wrong animal's record looks personalised and is wrong. Emergencies are checked before this, so a reported red flag still escalates.
+6. **Answer** — back in [ai.ts](apps/api/src/services/ai.ts)
+   - Feeding questions (`isFeedingQuestion`) build the plan once with `buildPlan` and render the same facts twice: `digestLines(plan)` for the prompt, `nutritionAnswer` for the deterministic answer.
+   - LLM configured (`llmEnabled` and a provider key) → `answerSystemPrompt` (rules + pet record + computed feeding data + numbered sources) → `llmComplete`, **whether or not a reference matched**. Retrieval decides what may be cited, not whether the model is allowed to answer: gating on "any chunk matched" is what made general feeding questions return reference text.
+   - `citedSources(text, sources)` returns only the `[n]` markers the answer actually used, so general knowledge is never dressed up as sourced.
+   - Otherwise → `recordAnswer` for a record lookup, `demoAnswer` when approved snippets are the answer, `generalAnswer` when nothing covers the question, `nutritionAnswer` for a feeding question. Every deterministic reply reports `modeReason` (`no_model_configured`, `model_disabled_by_admin`, `provider_error`, `guard_rejected`…).
 
-Two rules hold in every branch: **no diagnosis, no drug names or doses**, and **clinical claims must come from approved sources**. The pet record is usable for dates, weights and history but is never treated as clinical evidence.
+Three rules hold in every branch: **no diagnosis, no drug names or doses**, **clinical claims must come from approved sources**, and **an answer is only for the selected pet**. The pet record is usable for dates, weights and history but is never treated as clinical evidence.
 
 ---
 
@@ -193,11 +196,15 @@ Each router is mounted in `app.ts`. Every handler validates input with zod, chec
 
 | File | Key functions |
 | --- | --- |
-| [services/ai.ts](apps/api/src/services/ai.ts) | `generateAiReply(pet, message, history)` — the pipeline; `aiRuntimeInfo()`; internals: `referralFor`, `dedupeSources`, `retrieveAllSources`, `emergencyAnswer`, `unsupportedAnswer`, `recordAnswer`, `demoAnswer`, `systemPrompt` |
+| [services/ai.ts](apps/api/src/services/ai.ts) | `generateAiReply(pet, message, history)` — the pipeline; `aiRuntimeInfo()`, `isFeedingQuestion`, `generalAnswer`; internals: `referralFor`, `dedupeSources`, `retrieveAllSources`, `emergencyAnswer`, `unsupportedAnswer`, `recordAnswer`, `demoAnswer`, `answerSystemPrompt`, `nutritionRules`, `citedSources` |
+| [services/profile-match.ts](apps/api/src/services/profile-match.ts) | `detectProfileConflict(pet, message)`, `profileConflictAnswer(pet, message, conflict)` — pure species/breed/age/weight comparison between the question and the selected pet; asks which animal instead of answering for the wrong one |
+| [services/nutrition-answer.ts](apps/api/src/services/nutrition-answer.ts) | `nutritionAnswer(pet, plan)` — deterministic feeding answer (complete food, daily range, meals, water, hazards, recipes-as-treats, gaps) used when no model answers |
 | [services/pet-context.ts](apps/api/src/services/pet-context.ts) | `loadPetRecordFacts`, `recordPromptBlock`, `relevantRecordLines` — the pet's own data for the assistant |
-| [services/emergency.ts](apps/api/src/services/emergency.ts) | `detectEmergency(text, species)` — deterministic red-flag rules (chocolate, xylitol, urinary blockage, bloat, seizure…) and `emergencyRuleSummaries` |
+| [services/emergency.ts](apps/api/src/services/emergency.ts) | `detectEmergency(text, species)` — deterministic red-flag rules (chocolate, xylitol, urinary blockage, bloat, seizure…) and `emergencyRuleSummaries`. Questions ("what if…", "which foods are toxic…", "warning signs of…") are not treated as reported incidents; a suspected exposure ("not sure if he ate…") still escalates |
+| [services/answer-guard.ts](apps/api/src/services/answer-guard.ts) | `checkGeneratedAnswer(text)`, `urgencyForEmergency(match)`, `URGENCY_LABEL`, `URGENCY_ACTION` — inspects model output for doses, prescription advice, stated diagnoses, home remedies, claimed examinations and missing referrals; a failing answer is discarded, never patched |
 | [services/capability.ts](apps/api/src/services/capability.ts) | `detectTask`, `getCapability`, `taskLabel`, `speciesDisplayNames` — decides whether the platform claims to support a task for a species |
 | [services/retrieval.ts](apps/api/src/services/retrieval.ts) | `tokenize`, `singular`, `normalizeSymptoms`, `retrieveSources`, `MIN_RELEVANCE_SCORE` — lexical retrieval over approved chunks |
+| [services/feeding-plan.ts](apps/api/src/services/feeding-plan.ts) | `feedingPlanForPet(petId, user)`, `buildPlan(subject)`, `estimateEnergy(species, stage, weightKg, activity, conditions)`, `feedingDigest(subject)` — deterministic personalised plan: RER = 70 × kg^0.75 with a documented maintenance **range**, meal split, treat allowance, breed guidance, condition rules, allergy exclusions. Refuses calorie maths for non-dog/cat species |
 | [services/nutrition-rag.ts](apps/api/src/services/nutrition-rag.ts) | `syncNutritionRagMirror(kind, id, status)`, `retrieveNutritionForChat(pet, message, limit)` — mirror + structured retrieval |
 | [services/vaccine-rag.ts](apps/api/src/services/vaccine-rag.ts) | `syncVaccineScheduleMirror(id, status)`, `syncAllApprovedVaccineSchedules()`, `vaccineDocumentId()` — approved schedule rows as citable documents |
 | [services/vaccine-schedule.ts](apps/api/src/services/vaccine-schedule.ts) | Workbook parsing (`parseFirstDoseDays`, `parseSeriesIntervalWeeks`, `parseBoosterMonths`, `seriesOffsets`, `vaccineKey`, `guidanceLevel`), date maths (`monthsBetween`, `addMonths`), and the plan (`approvedSchedules`, `planForPet`, `generateCheckpoints`, `createCheckpoint`, `rescheduleCheckpoint`, `completeCheckpoint`, `removeCheckpoint`, `checkpointsForPet`) |
@@ -206,7 +213,7 @@ Each router is mounted in `app.ts`. Every handler validates input with zod, chec
 | [services/notifications.ts](apps/api/src/services/notifications.ts) | `createNotification`, `sendPush`, `savePushSubscription`, `notificationEvents`; re-exports `sendEmail` — in-app always, push only when configured |
 | [services/email.ts](apps/api/src/services/email.ts) | `sendEmail(to, subject, text, html?)`, `emailConfigured()`, `emailTransport()`, `parseSender` — HTTPS transport (`brevo`/`resend`, the only one that works on Render free, which blocks SMTP ports) or nodemailer SMTP |
 | [services/password-reset.ts](apps/api/src/services/password-reset.ts) | `requestPasswordReset(email, ip)`, `issueResetToken`, `verifyResetToken`, `resetPasswordWithToken` — 32-byte single-use token stored as SHA-256, 30-minute expiry, one live link per account, 3 requests/hour per address |
-| [services/llm.ts](apps/api/src/services/llm.ts) | `llmConfigured()`, `llmComplete(messages)` — OpenAI-compatible chat call with timeout; returns `null` instead of throwing |
+| [services/llm.ts](apps/api/src/services/llm.ts) | `checkLlmSettings`, `llmConfigured()`, `llmConfigStatus()`, `llmComplete(messages)`, `llmLastError()` — OpenAI-compatible chat call with timeout; returns `null` instead of throwing, and remembers the provider's own error text for `/health` |
 | [services/nutrition.ts](apps/api/src/services/nutrition.ts) | Workbook-to-application mapping (`petLifeStage`, `mapWorkbookSpecies`, `mapLifeStage`, `mapSeverity`, `allergyTokens`), approved-row queries (`approvedGuidanceForPet`, `approvedHazards`, `approvedRecipes`, `approvedBreedGuidance`, `approvedHealthRules`), `nutritionProfileForPet`, `hazardForFoodQuery` |
 | [services/nutrition-import.ts](apps/api/src/services/nutrition-import.ts) | `stageWorkbook`, `validateWorkbook`, `importWorkbook`, `emptyReport` — validation and staging; nothing is served until reviewed |
 | [services/exa-search.ts](apps/api/src/services/exa-search.ts) | `webSearchConfigured()`, `searchWeb(query)` — live web search keyed server-side |
@@ -305,6 +312,8 @@ Only `knowledge_documents` with `status = 'approved'` are retrievable, and only 
 | [test/nutrition.test.ts](apps/api/test/nutrition.test.ts) | Nutrition import validation, review queue, versioning, retrieval, citations |
 | [test/vaccine-schedule.test.ts](apps/api/test/vaccine-schedule.test.ts) | Pure workbook parsing and date arithmetic (no database) |
 | [test/pet-context.test.ts](apps/api/test/pet-context.test.ts) | Record prompt block (labels, size cap) and topic filtering (no database) |
+| [test/ai-routing.test.ts](apps/api/test/ai-routing.test.ts) | Routing with a stubbed provider: a feeding question reaches the model, the computed plan reaches the prompt, only cited sources are returned, medication and emergency paths skip the model, a Labrador question against a selected cat clarifies, and the deterministic plan still answers with no model |
+| [test/ai-eval.test.ts](apps/api/test/ai-eval.test.ts) | Golden behaviour set (emergency recall, false positives, citation validity, referral rate, guard findings) over `test/ai-eval/cases.json` |
 
 Run `npm test`. The suite creates its own PGlite database in `.data/test-pg` and never touches your development data.
 
@@ -328,4 +337,6 @@ Run `npm test`. The suite creates its own PGlite database in `.data/test-pg` and
 - **Pending is invisible.** Imported knowledge, nutrition and vaccination rows do nothing until an administrator approves them, and un-approving removes them from the AI index.
 - **Two kinds of truth.** The pet record supplies *facts the owner entered* (dates, weights, history). Clinical claims come only from approved sources.
 - **Refusal is a feature.** Emergency rules run first; unsupported species/tasks say so; medications are never dosed; when nothing relevant is found the assistant says it does not know.
+- **Answer for the selected pet or ask.** A question that describes a different species, breed, age or weight gets a clarification and no calculated plan; never quietly answer with another animal's numbers.
+- **A citation is a claim about the source.** Only `[n]` markers the answer really used become citations, so general model knowledge is never presented as approved evidence.
 - **Reminders are opt-in.** Feeding, care and vaccination notifications are off until the owner enables them, and moving a date moves its reminder.
