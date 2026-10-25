@@ -365,6 +365,20 @@ export interface AiReply {
     evidenceSummary: string;
   };
   mode: 'deterministic' | 'llm' | 'blocked';
+  /** why this answer was produced this way — see docs/API.md */
+  modeReason?: string;
+  urgency?: 'routine' | 'prompt' | 'urgent' | 'emergency';
+  needsClarification?: boolean;
+  /**
+   * Optional questions shown with an emergency reply. They are never a
+   * prerequisite for seeking care, and the safety instruction does not wait
+   * on an answer.
+   */
+  followUps?: string[];
+  /** whether the configured model was called for this reply */
+  llmAttempted?: boolean;
+  /** sanitised provider failure when the model call failed — never a key */
+  providerError?: string | null;
   disclaimer: string;
   referral: string;
   createdAt?: string;

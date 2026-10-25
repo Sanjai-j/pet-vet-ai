@@ -69,7 +69,9 @@ export type IssueCode =
   | 'examination_claim'
   | 'home_remedy'
   | 'false_reassurance'
-  | 'missing_referral';
+  | 'missing_referral'
+  | 'urgency_downgrade'
+  | 'home_treatment';
 
 export interface AnswerIssue {
   code: IssueCode;
@@ -117,6 +119,27 @@ const FALSE_REASSURANCE =
   /\b(?:nothing to worry about|no (?:real )?(?:need|reason) to worry|it'?s (?:totally|completely|perfectly|absolutely) (?:fine|normal|safe)|definitely not (?:serious|an emergency|dangerous)|you (?:don't|do not) need (?:to see|a) (?:a )?(?:vet|veterinarian))\b/i;
 
 const REFERRAL = /\b(?:veterinar\w*|vet)\b/i;
+
+/**
+ * Advice that sends an owner *away* from care. A supplementary emergency
+ * explanation is only safe when it reinforces the red flag, so these phrases
+ * discard the generated text and leave the deterministic safety instruction.
+ *
+ * Deliberately phrase-level: "monitor her breathing while you drive" is
+ * correct emergency advice and must not match; "monitor at home" is not.
+ */
+const WAIT_ADVICE =
+  /\b(?:wait (?:and see|and watch|it out|until (?:morning|tomorrow|it passes))|monitor (?:at|from) home|watch (?:him|her|it|them) at home|see (?:how|if) (?:it|he|she|things) (?:goes|improves?)|hold off (?:on|until)|not (?:an? )?(?:medical )?emergency|no (?:need|reason) to (?:rush|hurry)|you (?:can|may) (?:probably |safely )?(?:wait|delay)|should be (?:fine|okay|ok)|likely nothing (?:serious|to worry))\b/i;
+
+const HOME_TREATMENT =
+  /\b(?:treat (?:him|her|it|them|your pet) at home|home remedy|try (?:a |some )?(?:home|herbal|homeopathic) (?:remedy|treatment)|give (?:him|her|it|them)[^.!?]{0,40}(?:human (?:medicine|tablets?|painkillers?)|paracetamol|ibuprofen|aspirin|diclofenac))\b/i;
+
+/**
+ * For an emergency-level rule, "book a routine appointment" or "tomorrow" is
+ * itself a downgrade, even though it names a veterinarian.
+ */
+const DELAYED_CARE =
+  /\b(?:book (?:a|an) (?:routine )?appointment|schedule (?:a|an) (?:routine )?appointment|in the next (?:few|couple of|couple) days|within (?:a )?(?:few|couple of) days|call (?:them |your vet )?tomorrow|tomorrow (?:morning )?(?:is|should be) (?:fine|ok))\b/i;
 
 function sentences(text: string): string[] {
   return text
@@ -171,4 +194,30 @@ export function checkGeneratedAnswer(text: string): AnswerIssue[] {
 
 export function describeIssues(issues: AnswerIssue[]): string {
   return issues.map((i) => `${i.code} ("${i.detail}")`).join('; ');
+}
+
+/**
+ * Guard for the *supplementary* text added to an emergency reply.
+ *
+ * The deterministic red-flag instruction is already on screen and is never
+ * generated, so a model answer here only has to do one thing: support it. It
+ * is rejected when it would downgrade urgency, advise waiting at home, offer a
+ * home treatment, state a diagnosis, name a medicine or dose, or claim an
+ * examination. The referral requirement is dropped because the safety block
+ * above already names the veterinarian — rejecting a whole explanation for
+ * repeating it would lose the explanation and gain nothing.
+ */
+export function checkEmergencyAnswer(text: string, urgency: Urgency): AnswerIssue[] {
+  const issues = checkGeneratedAnswer(text).filter((i) => i.code !== 'missing_referral');
+  const push = (code: IssueCode, pattern: RegExp) => {
+    const match = pattern.exec(text);
+    if (match) issues.push({ code, detail: match[0].slice(0, 120) });
+  };
+  // "Do not wait and see" and "never try a home remedy" are warnings, not advice.
+  if (WAIT_ADVICE.test(text) && !onlyMentionsToForbid(text, WAIT_ADVICE)) push('urgency_downgrade', WAIT_ADVICE);
+  if (HOME_TREATMENT.test(text) && !onlyMentionsToForbid(text, HOME_TREATMENT)) push('home_treatment', HOME_TREATMENT);
+  if (urgency === 'emergency' && DELAYED_CARE.test(text) && !onlyMentionsToForbid(text, DELAYED_CARE)) {
+    push('urgency_downgrade', DELAYED_CARE);
+  }
+  return issues;
 }

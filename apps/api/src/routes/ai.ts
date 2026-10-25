@@ -168,10 +168,17 @@ aiRouter.post(
         Boolean(reply.emergency), reply.capability.status, reply.mode !== 'llm',
       ],
     );
+    // Diagnostic metadata only: the red flag, how the answer was produced,
+    // whether the model was tried and the provider's sanitised failure text.
+    // Never the message body, the key or any token.
     await audit(user.id, 'ai.message', 'ai_conversation', conversationId, {
       emergency: reply.emergency?.ruleId ?? null,
+      urgency: reply.urgency,
       capability: reply.capability.status,
       mode: reply.mode,
+      modeReason: reply.modeReason,
+      llmAttempted: Boolean(reply.llmAttempted),
+      providerError: reply.providerError ?? null,
     });
 
     res.status(201).json({

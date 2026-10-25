@@ -128,6 +128,44 @@ export interface EmergencyMatch {
 }
 
 /**
+ * What a genuinely relevant approved reference looks like for each red flag.
+ *
+ * Lexical retrieval matches words, not topics: "not eating for days" scored a
+ * vomiting document (it contains "refusing food") and a diabetes nutrition
+ * rule, and both were attached to an anorexia red flag as if the app had
+ * decided on a cause. These patterns are tested against a reference's own
+ * title and category, so a document qualifies only when it is *about* the red
+ * flag, not when it happens to mention one of the words. A rule with no topic
+ * here cites nothing rather than guessing.
+ */
+const REFERENCE_TOPIC: Record<string, RegExp> = {
+  chocolate: /chocolat|xylitol|methylxanthine|toxicolog/i,
+  xylitol: /xylitol|sugar[- ]?free|hypoglyc|insulin|toxicolog/i,
+  grapes: /grape|raisin|sultana|kidney/i,
+  allium: /onion|garlic|allium|an(a)?emia|red blood cell/i,
+  poison: /poison|toxic|rodenticide|pesticide|antifreeze|toxicolog/i,
+  breathing: /breath|respirat|choking|dyspn/i,
+  collapse: /seizure|collapse|convuls|unconscious|neurolog/i,
+  heatstroke: /heat ?stroke|hyperthermia|heat/i,
+  bloat_dog: /bloat|torsion|gdv|stomach|abdomen/i,
+  urinary_cat: /urin|bladder|urethra|blockage|obstruct|litter/i,
+  bleeding: /bleed|wound|h(a)?emorrhage|cut|injur/i,
+  vomiting: /vomit|gastro|digestive|regurgit|diarrh/i,
+  rumen_bloat: /bloat|rumen|flank|calving|kidding/i,
+  bird_respiratory: /bird|avian|respirat|breath|husbandry/i,
+  // Appetite vocabulary only. "Feeding practice" and "diabetes" documents
+  // are adjacent topics, not answers to why an animal has stopped eating.
+  not_eating: /appetit|anorex|not eating|food refusal|refus\w* (?:food|to eat)|weight loss|dehydrat/i,
+};
+
+/** Never matches: an unknown rule must cite nothing rather than guess. */
+const NO_MATCH = /$^/;
+
+export function emergencyReferenceTopic(ruleId: string): RegExp {
+  return REFERENCE_TOPIC[ruleId] ?? NO_MATCH;
+}
+
+/**
  * "What if my dog ate chocolate?" asks about a risk; "my dog ate chocolate"
  * reports an exposure. Only the second needs emergency instructions, and
  * treating the first as an incident trains owners to ignore the banner.

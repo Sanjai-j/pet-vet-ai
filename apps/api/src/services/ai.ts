@@ -1,7 +1,8 @@
 import { one } from '../db.js';
 import { config } from '../config.js';
-import { detectEmergency, type EmergencyMatch } from './emergency.js';
+import { detectEmergency, emergencyReferenceTopic, type EmergencyMatch } from './emergency.js';
 import {
+  checkEmergencyAnswer,
   checkGeneratedAnswer,
   describeIssues,
   urgencyForEmergency,
@@ -48,7 +49,14 @@ export type ModeReason =
   | 'model_disabled_by_admin'
   | 'provider_error'
   | 'guard_rejected'
+  /** red flag, no model available: deterministic safety instruction only */
   | 'emergency'
+  /** red flag, plus a model explanation that passed the emergency guard */
+  | 'emergency_llm'
+  /** red flag, the model was called but failed or timed out */
+  | 'emergency_provider_error'
+  /** red flag, the model answered but tried to soften or contradict it */
+  | 'emergency_guard_rejected'
   | 'ai_disabled'
   | 'medication_blocked'
   | 'profile_mismatch';
@@ -69,6 +77,16 @@ export interface AiReply {
   needsClarification?: boolean;
   /** routine | prompt | urgent | emergency — never inferred from the answer text */
   urgency: Urgency;
+  /**
+   * Optional questions that would sharpen the answer. On an emergency reply
+   * they are explicitly *not* a prerequisite for care, and the safety
+   * instruction never depends on an answer.
+   */
+  followUps?: string[];
+  /** true when the model was actually called for this reply */
+  llmAttempted?: boolean;
+  /** sanitised provider failure (never the key) when the model failed */
+  providerError?: string | null;
   disclaimer: string;
   referral: string;
 }
@@ -139,6 +157,79 @@ export function isFeedingQuestion(message: string): boolean {
   return FEEDING_TERMS.test(message) || FEEDING_PHRASE.test(message);
 }
 
+/**
+ * Only references that are *about* this red flag are shown or sent to the
+ * model. Lexical retrieval alone attached a vomiting document and a diabetes
+ * nutrition rule to "not eating for days", which reads as a tentative
+ * diagnosis the app is not entitled to make.
+ */
+function sourcesForEmergency(sources: RetrievedSource[], match: EmergencyMatch): RetrievedSource[] {
+  const topic = emergencyReferenceTopic(match.ruleId);
+  return sources.filter((s) => topic.test(`${s.title} ${s.category}`));
+}
+
+/**
+ * Optional questions that would help a veterinarian. They are asked *after* the
+ * instruction to seek care and are never a gate on it — the owner can ignore
+ * every one and still be told to go now.
+ */
+function emergencyFollowUps(pet: AiPet, match: EmergencyMatch): string[] {
+  const name = pet.name || 'your pet';
+  const questions =
+    match.ruleId === 'not_eating'
+      ? [
+          `How long has ${name} refused food — hours or days?`,
+          `Is ${name} still drinking water, and keeping it down?`,
+        ]
+      : [`When did this start, and is it getting worse?`, `Is ${name} still eating, drinking and alert?`];
+  if (pet.ageEstimateMonths == null && pet.weightKg == null) questions.push(`How old is ${name}, roughly?`);
+  questions.push('Are there other signs — vomiting, diarrhoea, breathing changes or collapse?');
+  return questions;
+}
+
+/**
+ * Prompt for the supplementary emergency explanation.
+ *
+ * The red flag has already fired and the owner has already been told to seek
+ * care, so the model is asked for context and what to say to the vet — never
+ * for a judgement about whether the animal needs to be seen. The guard in
+ * answer-guard.ts enforces the same rules on the output, and text that breaks
+ * them is discarded in favour of the deterministic instruction.
+ */
+function emergencySystemPrompt(
+  pet: AiPet,
+  match: EmergencyMatch,
+  relevant: RetrievedSource[],
+): string {
+  const sourceBlock = relevant
+    .map((s, i) => `[${i + 1}] ${s.title} — ${s.sourceOrg}\n${s.snippet}`)
+    .join('\n\n');
+  return [
+    'You are Pet Vet AI, a cautious animal-health assistant for pet owners in India.',
+    `A deterministic red-flag check has already fired for this message: "${match.label}".`,
+    'The owner has already been told, in the app, to contact a veterinarian now. Your job is a short, calm explanation that supports that instruction. It is supplementary and must never replace or soften it.',
+    '',
+    'RULES',
+    '- Never downgrade the urgency, never suggest waiting or watching at home, and never contradict the safety instruction.',
+    '- Do not name a diagnosis as confirmed, a medicine, a dose, or a home treatment.',
+    '- Never say "nothing to worry about", "should be fine" or "not an emergency".',
+    '- Explain why this sign matters, what the owner can safely do while arranging transport, and what to tell the veterinarian.',
+    '- Ask at most two short questions that would help a veterinarian, and make clear they are optional — care must not wait for an answer.',
+    '- Cite a numbered source with [n] only when that source contains the claim. Label anything else as general guidance. Never invent a citation.',
+    '- Be concise (under 200 words). End by repeating that a veterinarian should be contacted now.',
+    '',
+    'SAFETY INSTRUCTION ALREADY SHOWN TO THE OWNER',
+    match.advice,
+    '',
+    animalLine(pet),
+    '',
+    relevant.length
+      ? 'Approved sources:'
+      : 'Approved sources: (none of the approved references cover this red flag — everything you add is general guidance and must be labelled as such)',
+    sourceBlock,
+  ].join('\n');
+}
+
 function emergencyAnswer(
   pet: AiPet,
   match: EmergencyMatch,
@@ -158,6 +249,30 @@ function emergencyAnswer(
     lines.push('', 'Related approved reference material is listed below. It does not replace an examination.');
   }
   return lines.join('\n');
+}
+
+/**
+ * The deterministic instruction stays first and intact; the model explanation,
+ * when one survived the guard, is clearly additional. Follow-up questions are
+ * optional by construction and are the last thing before the disclaimer.
+ */
+function composeEmergencyReply(
+  safety: string,
+  explanation: string | null,
+  followUps: string[],
+  disclaimer: string,
+): string {
+  const parts = [safety];
+  if (explanation) parts.push('', 'What this means:', '', explanation.trim());
+  if (followUps.length) {
+    parts.push(
+      '',
+      'These details would help a veterinarian (answering them is optional and must not delay care):',
+      ...followUps.map((question) => `• ${question}`),
+    );
+  }
+  parts.push('', disclaimer);
+  return parts.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
 function unsupportedAnswer(pet: AiPet, task: string): string {
@@ -430,6 +545,18 @@ export async function generateAiReply(
   const subjectSpecies = general ? stated.species ?? pet.speciesCode : pet.speciesCode;
   const referral = referralFor(subjectSpecies);
 
+  // Model availability is needed by the emergency branch too: a red flag keeps
+  // its deterministic instruction, and the model only ever adds to it.
+  const aiEnabled = settings.enabled !== false;
+  const modelConfigured = llmConfigured();
+  const adminAllowsModel = settings.llmEnabled !== false;
+  const useLlm = aiEnabled && adminAllowsModel && modelConfigured;
+  if (modelConfigured && !adminAllowsModel) {
+    // This switch used to silence the model with no trace anywhere except a
+    // database row the owner of the deployment cannot see.
+    console.warn('[ai] a model is configured but the administrator setting llmEnabled is false; answers stay deterministic');
+  }
+
   const emergency = detectEmergency(message, subjectSpecies, pet.name);
   const task = emergency ? 'emergency_triage' : detectTask(message);
   const capability = await getCapability(subjectSpecies, task);
@@ -443,18 +570,59 @@ export async function generateAiReply(
 
   // 1. Safety first. A reported red flag outranks every other consideration,
   //    including whose animal the question is about.
+  //
+  //    Order matters: the deterministic instruction is composed before the
+  //    model is called, it is always returned, and the model may only append
+  //    an explanation that passed the emergency guard. A provider failure,
+  //    timeout or unsafe answer therefore degrades to the same safe reply
+  //    instead of removing it.
   if (emergency) {
-    const sources = await retrieveAllSources(pet, message, 2);
+    const emergencyPet: AiPet = general
+      ? { ...pet, speciesCode: subjectSpecies, name: '', breedName: null, customBreed: null, ageEstimateMonths: null, weightKg: null, conditions: null, allergies: null, dietaryRestrictions: null, activityLevel: null }
+      : pet;
+    const relevant = sourcesForEmergency(await retrieveAllSources(emergencyPet, message, 3), emergency);
+    const safety = emergencyAnswer(pet, emergency, relevant, urgency);
+    const followUps = emergencyFollowUps(pet, emergency);
+    const base = { emergency, capability: capabilityInfo, urgency, disclaimer, referral, followUps };
+
+    let llmAttempted = false;
+    let providerError: string | null = null;
+    if (useLlm) {
+      llmAttempted = true;
+      const text = await llmComplete([
+        { role: 'system', content: emergencySystemPrompt(pet, emergency, relevant) },
+        ...history.slice(-4).map((m) => ({ role: m.role, content: m.content }) as LlmMessage),
+        { role: 'user', content: message.slice(0, 4000) },
+      ]);
+      if (!text) {
+        providerError = llmLastError();
+        console.warn('[ai] emergency explanation unavailable; returning the deterministic safety instruction only');
+      } else {
+        const issues = checkEmergencyAnswer(text, urgency);
+        if (issues.length) {
+          console.warn(`[ai] emergency explanation rejected by the output guard: ${describeIssues(issues)}`);
+        } else {
+          return {
+            ...base,
+            answer: composeEmergencyReply(safety, text, followUps, disclaimer),
+            citations: citedSources(text, relevant),
+            mode: 'llm',
+            modeReason: 'emergency_llm',
+            llmAttempted,
+            providerError: null,
+          };
+        }
+      }
+    }
+
     return {
-      answer: emergencyAnswer(pet, emergency, sources, urgency),
-      citations: sources,
-      emergency,
-      capability: capabilityInfo,
+      ...base,
+      answer: composeEmergencyReply(safety, null, followUps, disclaimer),
+      citations: relevant,
       mode: 'deterministic',
-      modeReason: 'emergency',
-      urgency,
-      disclaimer,
-      referral,
+      modeReason: !llmAttempted ? 'emergency' : providerError ? 'emergency_provider_error' : 'emergency_guard_rejected',
+      llmAttempted,
+      providerError,
     };
   }
 
@@ -507,15 +675,6 @@ export async function generateAiReply(
       disclaimer,
       referral,
     };
-  }
-
-  const modelConfigured = llmConfigured();
-  const adminAllowsModel = settings.llmEnabled !== false;
-  const useLlm = adminAllowsModel && modelConfigured;
-  if (modelConfigured && !adminAllowsModel) {
-    // This switch used to silence the model with no trace anywhere except a
-    // database row the owner of the deployment cannot see.
-    console.warn('[ai] a model is configured but the administrator setting llmEnabled is false; answers stay deterministic');
   }
 
   // 3. Everything the owner has recorded about this pet: profile, vaccination
@@ -629,6 +788,8 @@ export async function generateAiReply(
           capability: capabilityInfo,
           mode: 'llm',
           modeReason: 'llm_answer',
+          llmAttempted: true,
+          providerError: null,
           urgency,
           disclaimer,
           referral,
@@ -642,6 +803,13 @@ export async function generateAiReply(
     : adminAllowsModel
       ? 'no_model_configured'
       : 'model_disabled_by_admin';
+  // Diagnostic metadata for the client and the audit log: whether the model
+  // was called, and the provider's own (sanitised) failure reason. Neither
+  // contains credentials or owner text.
+  const modelMeta = {
+    llmAttempted: useLlm,
+    providerError: failure === 'provider_error' ? llmLastError() : null,
+  };
 
   // 6. Deterministic answers, in order of how well they fit the question.
   if (general && feedingQuestion) {
@@ -657,6 +825,7 @@ export async function generateAiReply(
       emergency: null,
       capability: capabilityInfo,
       mode: 'deterministic',
+      ...modelMeta,
       modeReason: fallbackReason,
       urgency,
       disclaimer,
@@ -675,6 +844,7 @@ export async function generateAiReply(
       emergency: null,
       capability: capabilityInfo,
       mode: 'deterministic',
+      ...modelMeta,
       modeReason: fallbackReason,
       urgency,
       disclaimer,
@@ -692,6 +862,7 @@ export async function generateAiReply(
         emergency: null,
         capability: capabilityInfo,
         mode: 'deterministic',
+        ...modelMeta,
         modeReason: fallbackReason,
         urgency,
         disclaimer,
@@ -704,6 +875,7 @@ export async function generateAiReply(
       emergency: null,
       capability: capabilityInfo,
       mode: 'deterministic',
+      ...modelMeta,
       modeReason: fallbackReason,
       urgency,
       disclaimer,
@@ -717,6 +889,7 @@ export async function generateAiReply(
     emergency: null,
     capability: capabilityInfo,
     mode: 'deterministic',
+    ...modelMeta,
     modeReason: fallbackReason,
     urgency,
     disclaimer,

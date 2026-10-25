@@ -245,7 +245,7 @@ test('medication questions keep their restrictions even with a model configured'
   }
 });
 
-test('emergencies still raise urgent-care guidance and skip the model', async () => {
+test('emergencies keep the deterministic instruction first and use the model only to supplement it', async () => {
   await useModel(SAFE_MODEL_ANSWER);
   try {
     const res = await call('/ai/chat', {
@@ -255,9 +255,14 @@ test('emergencies still raise urgent-care guidance and skip the model', async ()
     });
     assert.equal(res.status, 201);
     assert.equal(res.data.reply.emergency.ruleId, 'chocolate');
-    assert.equal(res.data.reply.modeReason, 'emergency');
+    // The red flag still opens the reply, byte for byte, before anything the
+    // model wrote.
+    assert.match(res.data.reply.answer.split('\n')[0]!, /^⚠️ Urgent: Possible chocolate exposure$/);
     assert.match(res.data.reply.answer, /emergency hospital|veterinarian/i);
-    assert.equal(providerCalls.length, 0);
+    assert.equal(res.data.reply.modeReason, 'emergency_llm');
+    assert.equal(res.data.reply.llmAttempted, true);
+    assert.equal(providerCalls.length, 1, 'the model is asked for a supplementary explanation');
+    assert.match(providerCalls[0]!.body.messages[0].content, /SAFETY INSTRUCTION ALREADY SHOWN/);
   } finally {
     await useNoModel();
   }
