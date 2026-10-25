@@ -13,9 +13,10 @@ import { retrieveSources, type RetrievedSource } from './retrieval.js';
 import { retrieveNutritionForChat } from './nutrition-rag.js';
 import { llmComplete, llmConfigured, llmConfigStatus, llmLastError, type LlmMessage } from './llm.js';
 import { loadPetRecordFacts, recordPromptBlock, relevantRecordLines } from './pet-context.js';
-import { buildPlan, digestLines, type FeedingPlan } from './feeding-plan.js';
-import { detectProfileConflict, profileConflictAnswer } from './profile-match.js';
-import { nutritionAnswer } from './nutrition-answer.js';
+import { buildPlan, digestLines, estimateEnergy, type FeedingPlan } from './feeding-plan.js';
+import { detectProfileConflict, profileConflictAnswer, isGeneralQuestion, readStatedAnimal } from './profile-match.js';
+import { nutritionAnswer, generalNutritionAnswer } from './nutrition-answer.js';
+import type { PetLifeStage } from './nutrition.js';
 
 export interface AiPet {
   id: string;
@@ -126,7 +127,8 @@ async function retrieveAllSources(
 /** "What should I feed…" — a feeding plan question, not a hazard question. */
 const FEEDING_TERMS =
   /\b(?:feed|feeds|feeding|food|foods|diet|diets|meal|meals|portion|portions|calorie|calories|kcal|nutrition|kibble|recipe|recipes|treat|treats|bowl)\b/i;
-const FEEDING_PHRASE = /\b(?:what|how much)\b[^?]{0,40}\beat\b|\bhow much (?:should|do|can)\b/i;
+const FEEDING_PHRASE =
+  /\bwhat\b[^?]{0,80}\b(?:eat|eating)\b|\bhow much\b[^?]{0,60}\b(?:eat|food|feed)\b|\b(?:daily|day)\s*(?:amount|intake|ration|portion)\b/i;
 
 /**
  * Food-safety questions ("is chocolate toxic?", "can a cat eat grapes?") are
@@ -292,6 +294,21 @@ export interface PromptContext {
   nutrition: boolean;
   sources: RetrievedSource[];
   contextBlock: string;
+  /** set for a general question: the species under discussion, not the pet */
+  generalSpecies: string | null;
+}
+
+/** Life stage named in a general question, for the energy estimate. */
+function stageFromText(
+  message: string,
+  ageMonths: number | null,
+): Exclude<PetLifeStage, 'all'> {
+  if (ageMonths !== null) return ageMonths < 12 ? 'young' : ageMonths >= 96 ? 'senior' : 'adult';
+  const text = message.toLowerCase();
+  if (/\b(?:puppy|puppies|kitten|kittens|young|growing)\b/.test(text)) return 'young';
+  if (/\b(?:senior|elderly|older)\b/.test(text)) return 'senior';
+  if (/\badult\b/.test(text)) return 'adult';
+  return 'unknown';
 }
 
 /**
@@ -333,27 +350,46 @@ function answerSystemPrompt(pet: AiPet, opts: PromptContext): string {
     '- Ask at most two short follow-up questions when a missing detail matters.',
     '- State that this is general information and not a substitute for an examination.',
     '- Be concise (under 250 words). End with one line: "When to contact a veterinarian: ...".',
-    ...(opts.nutrition ? nutritionRules(pet) : []),
+    ...(opts.nutrition ? nutritionRules(opts.generalSpecies ?? pet.speciesCode, Boolean(opts.contextBlock)) : []),
     '',
-    animalLine(pet),
-    '',
-    opts.contextBlock || '(no pet record data)',
+    opts.generalSpecies
+      ? [
+          `Subject: general guidance for ${PLURAL_SPECIES[opts.generalSpecies] ?? opts.generalSpecies} — no individual animal.`,
+          '',
+          'GENERAL QUESTION RULES',
+          `- This is a general question about ${PLURAL_SPECIES[opts.generalSpecies] ?? opts.generalSpecies}, not about ${pet.name || 'the selected pet'}. No individual pet record is included, on purpose.`,
+          '- Answer for the species and life stage named in the question. Do not assume an individual animal\'s weight, age, allergies or medical history.',
+          '- If the question states a weight or age, use that figure and say it came from the question.',
+          ...(opts.contextBlock ? ['', opts.contextBlock] : []),
+        ].join('\n')
+      : [animalLine(pet), '', opts.contextBlock || '(no pet record data)'].join('\n'),
     '',
     opts.sources.length ? 'Approved sources:' : 'Approved sources: (none of the approved references cover this question)',
     sourceBlock,
   ].join('\n');
 }
 
+const PLURAL_SPECIES: Record<string, string> = {
+  dog: 'dogs',
+  cat: 'cats',
+  bird: 'birds',
+  cow: 'cattle',
+  goat: 'goats',
+  other: 'animals',
+};
+
 /** Extra instructions for a feeding question, dog/cat/bird aware. */
-function nutritionRules(pet: AiPet): string[] {
-  const energySpecies = pet.speciesCode === 'dog' || pet.speciesCode === 'cat';
+function nutritionRules(speciesCode: string, hasComputedFigures: boolean): string[] {
+  const energySpecies = speciesCode === 'dog' || speciesCode === 'cat';
   return [
     '',
     'FEEDING ANSWER RULES (this is a feeding question)',
     '- Open with what to feed: a commercially prepared food whose label states it is complete and balanced for this species and life stage is the default. Say what to avoid.',
-    energySpecies
-      ? '- Use the computed energy and meal figures below for the daily amount. Call them an estimate from the recorded weight and say that body condition and activity move the real requirement.'
-      : '- Do not apply dog or cat calorie equations to this species. Say that species-specific feeding guidance is limited and defer the amount to an avian or large-animal veterinarian.',
+    energySpecies && hasComputedFigures
+      ? '- Use the energy figures below for the daily amount. Call them an estimate and say that body condition and activity move the real requirement.'
+      : energySpecies
+        ? '- A daily amount needs a weight. If the question does not give one, ask for it and give the packet-guide starting point instead of a number.'
+        : '- Do not apply dog or cat calorie equations to this species. Say that species-specific feeding guidance is limited and defer the amount to an avian or large-animal veterinarian.',
     '- Cover meal frequency, clean water, gradual food changes, and safe feeding practice (no table scraps, spiced or fried food, sweets or bones of unknown origin).',
     '- Never describe a homemade recipe as complete or balanced unless an approved source says so. Home-cooked complete diets need a veterinary nutritionist.',
     '- If weight or age is missing, ask for it instead of inventing a portion.',
@@ -385,11 +421,18 @@ export async function generateAiReply(
     typeof (settings as { disclaimer?: string }).disclaimer === 'string'
       ? (settings as unknown as { disclaimer: string }).disclaimer
       : 'Pet Vet AI provides general information only and cannot diagnose or prescribe. It is not a substitute for a licensed veterinarian.';
-  const referral = referralFor(pet.speciesCode);
+  // A general question ("for a dog in general, what should a 25 kg Labrador
+  // eat?") is about a *kind* of animal. It is not a profile mismatch, and the
+  // reply must be built for the species in the question — never from the age,
+  // weight, breed or allergies of whichever pet happens to be selected.
+  const general = isGeneralQuestion(message, pet.name);
+  const stated = readStatedAnimal(message);
+  const subjectSpecies = general ? stated.species ?? pet.speciesCode : pet.speciesCode;
+  const referral = referralFor(subjectSpecies);
 
-  const emergency = detectEmergency(message, pet.speciesCode, pet.name);
+  const emergency = detectEmergency(message, subjectSpecies, pet.name);
   const task = emergency ? 'emergency_triage' : detectTask(message);
-  const capability = await getCapability(pet.speciesCode, task);
+  const capability = await getCapability(subjectSpecies, task);
   const urgency: Urgency = emergency ? urgencyForEmergency(emergency) : 'routine';
   const capabilityInfo = {
     task,
@@ -476,18 +519,26 @@ export async function generateAiReply(
   }
 
   // 3. Everything the owner has recorded about this pet: profile, vaccination
-  //    records and checkpoints, care plan, weight log and appointments.
-  const record = await loadPetRecordFacts(pet.id);
+  //    records and checkpoints, care plan, weight log and appointments. A
+  //    general question deliberately loads none of it.
+  const record = general ? null : await loadPetRecordFacts(pet.id);
   const recordLines = record ? relevantRecordLines(record, message) : [];
   const recordBlock = record ? recordPromptBlock(record) : '';
 
   // 4. Feeding questions are answered for *this* animal: life stage, breed,
   //    recorded conditions and allergies all change the answer, and the
-  //    arithmetic happens in feeding-plan.ts, never in the model.
+  //    arithmetic happens in feeding-plan.ts, never in the model. A general
+  //    question has no individual animal, so it gets no plan — only an
+  //    estimate from a weight the owner stated in the question.
   const feedingQuestion = isFeedingQuestion(message);
+  const statedStage = stageFromText(message, stated.ageMonths);
+  const statedEnergy =
+    general && feedingQuestion && stated.weightKg
+      ? estimateEnergy(subjectSpecies, statedStage, stated.weightKg, null, null).estimate
+      : null;
   let plan: FeedingPlan | null = null;
   let feedingLines: string[] = [];
-  if (feedingQuestion) {
+  if (feedingQuestion && !general) {
     try {
       plan = await buildPlan({
         speciesCode: pet.speciesCode,
@@ -508,23 +559,55 @@ export async function generateAiReply(
     }
   }
 
-  const contextBlock = [
-    recordBlock,
-    feedingLines.length
-      ? `Feeding data computed from approved records for ${pet.name} (use these figures, do not recompute):\n${feedingLines.map((l) => `- ${l}`).join('\n')}`
-      : '',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  const contextBlock = general
+    ? statedEnergy && stated.weightKg
+      ? [
+          `Weight stated in the question: ${stated.weightKg} kg. Energy estimated from that figure alone — no pet record was used.`,
+          `Resting energy ${statedEnergy.restingKcal} kcal/day; maintenance ${statedEnergy.merLowKcal}–${statedEnergy.merHighKcal} kcal/day at ${statedEnergy.factorLow}–${statedEnergy.factorHigh}× resting energy. Say it is an estimate.`,
+        ].join('\n')
+      : ''
+    : [
+        recordBlock,
+        feedingLines.length
+          ? `Feeding data computed from approved records for ${pet.name} (use these figures, do not recompute):\n${feedingLines.map((l) => `- ${l}`).join('\n')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
 
-  const sources = await retrieveAllSources(pet, message, 4);
+  // Retrieval follows the species in the question for a general question: the
+  // approved dog references answer a dog question even when a cat is selected.
+  const retrievalPet: AiPet = general
+    ? {
+        ...pet,
+        speciesCode: subjectSpecies,
+        name: '',
+        breedName: null,
+        customBreed: null,
+        ageEstimateMonths: null,
+        weightKg: null,
+        conditions: null,
+        allergies: null,
+        dietaryRestrictions: null,
+        activityLevel: null,
+      }
+    : pet;
+  const sources = await retrieveAllSources(retrievalPet, message, 4);
 
   // 5. The model answers whether or not a reference matched. Retrieval decides
   //    what it may cite, not whether it is allowed to answer.
   let failure: ModeReason | null = null;
   if (useLlm) {
     const text = await llmComplete([
-      { role: 'system', content: answerSystemPrompt(pet, { nutrition: feedingQuestion, sources, contextBlock }) },
+      {
+        role: 'system',
+        content: answerSystemPrompt(pet, {
+          nutrition: feedingQuestion,
+          sources,
+          contextBlock,
+          generalSpecies: general ? subjectSpecies : null,
+        }),
+      },
       ...history.slice(-6).map((m) => ({ role: m.role, content: m.content }) as LlmMessage),
       { role: 'user', content: message.slice(0, 4000) },
     ]);
@@ -561,6 +644,30 @@ export async function generateAiReply(
       : 'model_disabled_by_admin';
 
   // 6. Deterministic answers, in order of how well they fit the question.
+  if (general && feedingQuestion) {
+    return {
+      answer: generalNutritionAnswer({
+        speciesCode: subjectSpecies,
+        weightKg: stated.weightKg,
+        lifeStage: statedStage,
+        energy: statedEnergy,
+        sourceCount: sources.length,
+      }),
+      citations: sources,
+      emergency: null,
+      capability: capabilityInfo,
+      mode: 'deterministic',
+      modeReason: fallbackReason,
+      urgency,
+      disclaimer,
+      referral,
+    };
+  }
+
+  // For a general question the deterministic composers must speak about the
+  // species asked about, not about the selected pet.
+  const answerPet = general ? retrievalPet : pet;
+
   if (feedingQuestion && plan) {
     return {
       answer: nutritionAnswer(pet, plan),
@@ -592,7 +699,7 @@ export async function generateAiReply(
       };
     }
     return {
-      answer: generalAnswer(pet, task, recordLines, feedingLines),
+      answer: generalAnswer(answerPet, task, recordLines, feedingLines),
       citations: [],
       emergency: null,
       capability: capabilityInfo,
@@ -605,7 +712,7 @@ export async function generateAiReply(
   }
 
   return {
-    answer: demoAnswer(pet, sources, capability.status, task, recordLines, feedingLines),
+    answer: demoAnswer(answerPet, sources, capability.status, task, recordLines, feedingLines),
     citations: sources,
     emergency: null,
     capability: capabilityInfo,

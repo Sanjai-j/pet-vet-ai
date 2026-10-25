@@ -283,9 +283,89 @@ test('a Labrador question while Kushi is selected asks which animal instead of a
     assert.match(res.data.reply.answer, /which would you like|Which would you like/i);
     assert.doesNotMatch(res.data.reply.answer, /kcal/i, 'no plan is calculated for the described animal');
     assert.deepEqual(res.data.reply.citations, []);
+
+    // The exact short phrasing from the bug report is still a conflict: no
+    // general marker, and a specific animal that is not the selected one.
+    const short = await call('/ai/chat', {
+      method: 'POST',
+      token: ownerToken,
+      body: { petId: kushiId, message: 'What should I feed my 2-year-old Labrador weighing 25 kg?' },
+    });
+    assert.equal(short.data.reply.modeReason, 'profile_mismatch');
+    assert.equal(short.data.reply.needsClarification, true);
   } finally {
     await useNoModel();
   }
+});
+
+test('a general dog question while a cat is selected is answered, not sent to clarification', async () => {
+  await useModel(SAFE_MODEL_ANSWER);
+  try {
+    const res = await call('/ai/chat', {
+      method: 'POST',
+      token: ownerToken,
+      body: {
+        petId: kushiId,
+        message:
+          'For a dog in general, what should a healthy adult Labrador weighing around 25 kg eat daily? ' +
+          'Explain suitable food, approximate feeding amount, meal frequency, foods to avoid, and how to adjust portions based on body condition.',
+      },
+    });
+    assert.equal(res.status, 201);
+    assert.notEqual(res.data.reply.modeReason, 'profile_mismatch', 'an explicit general question is not a mismatch');
+    assert.equal(res.data.reply.needsClarification, undefined);
+    assert.equal(res.data.reply.modeReason, 'llm_answer');
+
+    const system: string = providerCalls[0]!.body.messages[0].content;
+    assert.match(system, /general question about dogs/i);
+    assert.match(system, /25 kg/, 'the weight stated in the question is the one used');
+    assert.doesNotMatch(system, /1\.5 kg/, "the selected cat's weight is never used");
+    assert.doesNotMatch(system, /Persian/i, "the selected cat's breed is never used");
+    assert.doesNotMatch(system, /Pet record from the owner/i, "the selected pet's record is not included");
+    assert.match(system, /kcal/, 'an estimate from the stated weight is available');
+  } finally {
+    await useNoModel();
+  }
+});
+
+test('"generally speaking" about dogs while a cat is selected is not a conflict', async () => {
+  await useModel(SAFE_MODEL_ANSWER);
+  try {
+    const res = await call('/ai/chat', {
+      method: 'POST',
+      token: ownerToken,
+      body: { petId: kushiId, message: 'Generally speaking, what should adult dogs eat?' },
+    });
+    assert.equal(res.status, 201);
+    assert.notEqual(res.data.reply.modeReason, 'profile_mismatch');
+    assert.equal(res.data.reply.modeReason, 'llm_answer');
+    const system: string = providerCalls[0]!.body.messages[0].content;
+    assert.match(system, /general question about dogs/i);
+    assert.doesNotMatch(system, /1\.5 kg/);
+  } finally {
+    await useNoModel();
+  }
+});
+
+test('a general dog answer never borrows the selected cat\'s numbers', async () => {
+  await useNoModel();
+  const res = await call('/ai/chat', {
+    method: 'POST',
+    token: ownerToken,
+    body: {
+      petId: kushiId,
+      message: 'For a dog in general, what should a healthy adult Labrador weighing around 25 kg eat daily?',
+    },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.data.reply.modeReason, 'no_model_configured');
+  assert.doesNotMatch(res.data.reply.answer, /1\.5 kg/, 'no profile weight leaks into a general answer');
+  assert.doesNotMatch(res.data.reply.answer, /Kushi/);
+  assert.match(res.data.reply.answer, /25 kg/, 'the stated weight is used');
+  assert.match(res.data.reply.answer, /kcal/);
+  assert.match(res.data.reply.answer, /dogs/i);
+  assert.match(res.data.reply.answer, /veterinar/i);
+  assert.match(res.data.reply.answer, /complete and balanced/i);
 });
 
 test('a question about the selected pet gets its own personalised plan', async () => {

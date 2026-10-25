@@ -165,10 +165,75 @@ function normalise(value: string): string {
 }
 
 /**
+ * What the question itself says about an animal: species, breed, weight, age.
+ * One parser, shared by conflict detection and by the general-question path,
+ * so the two can never disagree about what the owner actually wrote.
+ */
+export interface StatedAnimal {
+  species: string | null;
+  /** the literal word used, e.g. "labrador" or "dogs" */
+  speciesWord: string | null;
+  breed: string | null;
+  weightKg: number | null;
+  ageMonths: number | null;
+}
+
+export function readStatedAnimal(message: string): StatedAnimal {
+  const text = message.toLowerCase();
+  const species = findSpecies(text);
+  const breed = findBreed(text);
+  return {
+    species: species?.species ?? null,
+    speciesWord: species?.word ?? null,
+    breed: breed?.breed ?? null,
+    weightKg: findWeight(text),
+    ageMonths: findAge(text),
+  };
+}
+
+/**
+ * A question can be about a *kind* of animal rather than about the pet whose
+ * record happens to be open. "For a dog in general, what should a 25 kg adult
+ * Labrador eat?" describes a hypothetical dog; answering it with the selected
+ * cat's record would be wrong, and asking "which animal?" is pure friction —
+ * the owner already said which: any dog.
+ *
+ * Matching a phrase is not enough on its own. "In general, what should my 2-
+ * year-old Labrador eat?" is still about the owner's own dog, and "In general,
+ * how is Kushi doing?" names the selected pet. Both stay personalised, so a
+ * possessive or the pet's name vetoes the general reading.
+ */
+const GENERAL_MARKER = new RegExp(
+  [
+    '\\bin general\\b',
+    '\\bgenerally\\b',
+    '\\bhypothetical(?:ly)?\\b',
+    '\\bnot (?:about|for) (?:my|our|this|the selected)\\b',
+    '\\b(?:just )?(?:asking|curious)(?: in general| generally)?\\b',
+    '\\bfor (?:a|an|any) (?:[a-z]+ )?(?:dog|cat|bird|puppy|kitten|pet)s?\\b',
+  ].join('|'),
+  'i',
+);
+
+export function isGeneralQuestion(message: string, petName?: string | null): boolean {
+  const text = message.toLowerCase();
+  const name = (petName ?? '').trim().toLowerCase();
+  if (name.length >= 2 && text.includes(name)) return false;
+  if (PERSONAL.test(text)) return false;
+  return GENERAL_MARKER.test(text);
+}
+
+/**
  * Compare the question against the selected pet. Returns null when the question
- * is about this animal, or is not about a specific animal at all.
+ * is about this animal, is a general question about a kind of animal, or is not
+ * about a specific animal at all.
  */
 export function detectProfileConflict(pet: ProfileSubject, message: string): ProfileConflict | null {
+  // An explicit general question is never a profile mismatch. This is the one
+  // exception to the species/weight comparison below, and it is decided by the
+  // owner's own words rather than by guessing intent.
+  if (isGeneralQuestion(message, pet.name)) return null;
+
   const text = message.toLowerCase();
   const personal = PERSONAL.test(text);
   const statedTrait = STATED_TRAIT.test(text);
