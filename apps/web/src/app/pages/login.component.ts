@@ -40,52 +40,59 @@ import { ApiService } from '../core/api.service';
         <div class="auth-card">
           <div class="cat-peek" [class.watching]="focused()" aria-hidden="true">
             <svg class="cat-svg" viewBox="0 0 170 154" focusable="false">
-              <!-- ears -->
-              <path d="M40 48 L44 6 L78 32 Z" fill="#F0A868" stroke="#C9772F" stroke-width="3" stroke-linejoin="round" />
-              <path d="M130 48 L126 6 L92 32 Z" fill="#F0A868" stroke="#C9772F" stroke-width="3" stroke-linejoin="round" />
-              <path d="M49 38 L52 20 L66 32 Z" fill="#F6C5A7" />
-              <path d="M121 38 L118 20 L104 32 Z" fill="#F6C5A7" />
+              <defs>
+                <clipPath id="mimi-head"><ellipse cx="85" cy="76" rx="57" ry="48" /></clipPath>
+              </defs>
+
+              <!-- ears: white on the left, black on the right -->
+              <path d="M40 48 L44 6 L78 32 Z" fill="#FFFFFF" stroke="#2E2A28" stroke-width="3" stroke-linejoin="round" />
+              <path d="M130 48 L126 6 L92 32 Z" fill="#2E2A28" stroke="#2E2A28" stroke-width="3" stroke-linejoin="round" />
+              <path d="M49 38 L52 20 L66 32 Z" fill="#F3B9BE" />
+              <path d="M121 38 L118 20 L104 32 Z" fill="#8C6F6B" />
 
               <g class="cat-head">
-                <ellipse cx="85" cy="76" rx="57" ry="48" fill="#F0A868" stroke="#C9772F" stroke-width="3" />
-                <!-- tabby stripes -->
-                <g stroke="#C9772F" stroke-width="5" stroke-linecap="round" opacity=".45">
-                  <path d="M71 33 q5 11 1 19" />
-                  <path d="M85 29 v19" />
-                  <path d="M99 33 q-5 11 -1 19" />
+                <g clip-path="url(#mimi-head)">
+                  <ellipse cx="85" cy="76" rx="57" ry="48" fill="#FFFFFF" />
+                  <!-- black tuxedo mark: runs down from the black ear, over the right eye -->
+                  <ellipse cx="122" cy="58" rx="36" ry="34" fill="#2E2A28" />
+                  <!-- soft shading under the chin so a white face still has shape -->
+                  <ellipse cx="85" cy="120" rx="48" ry="24" fill="#EFE6DC" opacity=".5" />
                 </g>
+                <ellipse cx="85" cy="76" rx="57" ry="48" fill="none" stroke="#2E2A28" stroke-width="3" />
+
                 <!-- eyes -->
                 <g class="cat-eyes">
                   <ellipse cx="65" cy="73" rx="12" ry="13" fill="#FFFAF0" />
-                  <circle cx="65" cy="74" r="8.5" fill="#6C9B52" />
+                  <circle cx="65" cy="74" r="8.5" fill="#5F8F4C" />
                   <ellipse cx="65" cy="74" rx="3.6" ry="9" fill="#2B1D14" />
                   <circle cx="68" cy="68" r="2.6" fill="#fff" />
                   <ellipse cx="105" cy="73" rx="12" ry="13" fill="#FFFAF0" />
-                  <circle cx="105" cy="74" r="8.5" fill="#6C9B52" />
+                  <circle cx="105" cy="74" r="8.5" fill="#4F86A8" />
                   <ellipse cx="105" cy="74" rx="3.6" ry="9" fill="#2B1D14" />
                   <circle cx="108" cy="68" r="2.6" fill="#fff" />
                 </g>
                 <!-- muzzle -->
-                <ellipse cx="85" cy="95" rx="25" ry="16" fill="#FFF6E9" />
+                <ellipse cx="85" cy="95" rx="25" ry="16" fill="#FBF1E6" />
                 <path d="M78 90 c0-3 14-3 14 0 s-7 8 -7 8 -7-5 -7-8 z" fill="#D97B79" />
-                <path d="M85 98 q-2 8 -9 6 M85 98 q2 8 9 6" fill="none" stroke="#B5651D" stroke-width="2.4" stroke-linecap="round" />
-                <!-- whiskers -->
-                <g stroke="#D9A26A" stroke-width="2" stroke-linecap="round" opacity=".85">
+                <path d="M85 98 q-2 8 -9 6 M85 98 q2 8 9 6" fill="none" stroke="#8A7A70" stroke-width="2.4" stroke-linecap="round" />
+                <!-- whiskers: dark on the white side, pale on the black side -->
+                <g stroke="#6C625B" stroke-width="2" stroke-linecap="round" opacity=".85">
                   <path d="M50 86 L16 79" />
                   <path d="M50 95 L13 95" />
                   <path d="M50 103 L17 108" />
+                </g>
+                <g stroke="#F3E9DE" stroke-width="2" stroke-linecap="round" opacity=".9">
                   <path d="M120 86 L154 79" />
                   <path d="M120 95 L157 95" />
                   <path d="M120 103 L153 108" />
                 </g>
-                <ellipse cx="49" cy="96" rx="8" ry="5" fill="#F6B39B" opacity=".5" />
-                <ellipse cx="121" cy="96" rx="8" ry="5" fill="#F6B39B" opacity=".5" />
+                <ellipse cx="49" cy="96" rx="8" ry="5" fill="#F6B5BB" opacity=".5" />
               </g>
 
               <!-- left paw, resting on the card edge -->
               <g>
-                <ellipse cx="62" cy="137" rx="21" ry="15" fill="#F0A868" stroke="#C9772F" stroke-width="2.6" />
-                <g stroke="#C9772F" stroke-width="2" stroke-linecap="round" opacity=".55">
+                <ellipse cx="62" cy="137" rx="21" ry="15" fill="#FFFFFF" stroke="#2E2A28" stroke-width="2.6" />
+                <g stroke="#8A7E76" stroke-width="2" stroke-linecap="round" opacity=".6">
                   <path d="M53 129 v8" />
                   <path d="M62 127 v10" />
                   <path d="M71 129 v8" />
@@ -95,8 +102,8 @@ import { ApiService } from '../core/api.service';
               <!-- right paw: the one that taps along as you type -->
               @if (strikeId() === 0) {
                 <g>
-                  <ellipse cx="108" cy="137" rx="21" ry="15" fill="#F7B77C" stroke="#C9772F" stroke-width="2.6" />
-                  <g stroke="#C9772F" stroke-width="2" stroke-linecap="round" opacity=".55">
+                  <ellipse cx="108" cy="137" rx="21" ry="15" fill="#FFFFFF" stroke="#2E2A28" stroke-width="2.6" />
+                  <g stroke="#8A7E76" stroke-width="2" stroke-linecap="round" opacity=".6">
                     <path d="M99 129 v8" />
                     <path d="M108 127 v10" />
                     <path d="M117 129 v8" />
@@ -106,8 +113,8 @@ import { ApiService } from '../core/api.service';
               @for (s of [strikeId()]; track s) {
                 @if (s > 0) {
                   <g class="paw-swing">
-                    <ellipse cx="108" cy="137" rx="21" ry="15" fill="#F7B77C" stroke="#C9772F" stroke-width="2.6" />
-                    <g stroke="#C9772F" stroke-width="2" stroke-linecap="round" opacity=".55">
+                    <ellipse cx="108" cy="137" rx="21" ry="15" fill="#FFFFFF" stroke="#2E2A28" stroke-width="2.6" />
+                    <g stroke="#8A7E76" stroke-width="2" stroke-linecap="round" opacity=".6">
                       <path d="M99 129 v8" />
                       <path d="M108 127 v10" />
                       <path d="M117 129 v8" />
@@ -313,7 +320,7 @@ export class LoginComponent {
     if (this.error()) return 'Mrrow. That did not go through — check the email and password?';
     if (this.loading()) return 'Sniffing out your account…';
     const words = this.typedWords();
-    if (words === 0) return "Hi, I'm Billu. Every key press gets a paw tap.";
+    if (words === 0) return "Hi, I'm Mimi. Every key press gets a paw tap.";
     if (words === 1) return 'Boop! One word down.';
     if (words < 5) return `${words} words — nice rhythm.`;
     return "You're quick! My paw needs a break.";
@@ -323,7 +330,7 @@ export class LoginComponent {
     this.form.valueChanges.subscribe(() => this.reactToTyping());
   }
 
-  /** every key press makes the cat tap; the word count feeds his commentary */
+  /** every key press makes the cat tap; the word count feeds her commentary */
   private reactToTyping(): void {
     const { email, password } = this.form.getRawValue();
     const words = wordCount(email) + wordCount(password);
