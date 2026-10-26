@@ -173,6 +173,9 @@ aiRouter.post(
     // Never the message body, the key or any token.
     await audit(user.id, 'ai.message', 'ai_conversation', conversationId, {
       emergency: reply.emergency?.ruleId ?? null,
+      // true when the red flag came from the previous turn, so an operator can
+      // tell a fresh incident from a conversation that is still unresolved.
+      emergencyContinued: Boolean(reply.emergencyContinued),
       urgency: reply.urgency,
       capability: reply.capability.status,
       mode: reply.mode,

@@ -134,6 +134,14 @@ export interface NutritionChatPet {
   conditions?: string | null;
 }
 
+/**
+ * A question that asks what or how much to feed. Narrow on purpose: the
+ * appetite report "refused food for 1 day" contains the word "food" but is a
+ * symptom, not a feeding question.
+ */
+const FEEDING_ADVICE =
+  /\b(?:what|which)\b[^?]{0,40}\b(?:feed|food|foods|diet|eat|meal|meals|kibble|treats?)\b|\bhow much\b[^?]{0,40}\b(?:feed|food|eat|give)\b|\b(?:feeding|diet|nutrition)\s+(?:plan|guide|guidance|amount|schedule|advice)\b|\bportions?\b|\bcalorie|\bkcal\b|\brecipes?\b/i;
+
 function scoreTokens(queryTokens: string[], textTokens: string[]): number {
   if (!queryTokens.length) return 0;
   const counts = new Map<string, number>();
@@ -242,13 +250,22 @@ export async function retrieveNutritionForChat(
     });
   }
 
-  // Health rules match on the pet's recorded conditions, not the question text:
-  // a rule applies because of who the animal is, not what was asked.
+  // Health rules apply because of who the animal is — but only when the
+  // question is actually about feeding, or actually mentions the condition.
+  // Previously a recorded condition was enough on its own, so "Papu refused
+  // for 1 day" arrived at the owner with a diabetes-diet card attached as if
+  // the app had decided on a cause.
+  const feedingQuestion = FEEDING_ADVICE.test(message);
   for (const r of rules) {
     const matched = (r.keywords ?? []).filter((k) =>
       conditionTokens.includes(k.toLowerCase()) || (pet.conditions ?? '').toLowerCase().includes(k.toLowerCase()),
     );
     if (!matched.length) continue;
+    const topicScore = scoreTokens(
+      queryTokens,
+      tokenize(`${r.condition} ${(r.keywords ?? []).join(' ')} ${r.guidance} ${r.safety}`),
+    );
+    if (!feedingQuestion && topicScore === 0) continue;
     out.push({
       documentId: `nut_health_rule_${r.id}`,
       chunkId: `nut_health_rule_${r.id}_0`,
@@ -258,7 +275,9 @@ export async function retrieveNutritionForChat(
       isDemo: r.isDemo,
       category: 'nutrition',
       snippet: `Applies to ${matched.join(', ')} on this pet. ${r.guidance} Safety rule: ${r.safety}`,
-      score: 1.5,
+      // Feeding advice for a pet with a recorded condition outranks ordinary
+      // guidance; a question that merely mentions the condition does not.
+      score: Number(Math.min(1.5, (feedingQuestion ? 1 : 0.6) + topicScore).toFixed(4)),
     });
   }
 

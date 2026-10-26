@@ -23,6 +23,12 @@ const STOPWORDS = new Set([
   // comes from, not what it is about. Leaving them in matched unrelated
   // documents that merely contain "record the time...".
   'record', 'recorded', 'recording', 'log', 'logged',
+  // How long something has lasted is not what it is about. "refused for 1 day"
+  // used to retrieve a urinary-blockage document (it contains "within a day")
+  // because "day" was the only query token that matched anything.
+  'day', 'days', 'hour', 'hours', 'hr', 'hrs', 'week', 'weeks', 'month', 'months',
+  'year', 'years', 'yesterday', 'today', 'tonight', 'morning', 'evening', 'night',
+  'since', 'still', 'again', 'already', 'recently', 'lately', 'nowadays',
 ]);
 
 /**
@@ -135,6 +141,8 @@ export async function retrieveSources(
     for (const q of queryTokens) if (titleTokens.includes(q)) score += 0.8;
     const norm = Math.sqrt(tokens.length || 1);
     return {
+      covered: [...new Set(queryTokens)].filter((q) => counts.has(q)),
+      titleCovered: [...new Set(queryTokens)].filter((q) => titleTokens.includes(q)),
       documentId: row.documentId,
       chunkId: row.chunkId,
       title: row.title,
@@ -148,7 +156,23 @@ export async function retrieveSources(
   });
 
   return scored
+    // One shared word is a coincidence, not a topic — unless that word names
+    // the document. Two independent words, or a word in the title, is the
+    // smallest evidence that the reference is about this question.
+    .filter((s) => s.covered.length >= 2 || s.titleCovered.length >= 1)
     .filter((s) => s.score >= MIN_RELEVANCE_SCORE)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .slice(0, limit)
+    // Coverage is a ranking gate, not part of the public source shape.
+    .map((s) => ({
+      documentId: s.documentId,
+      chunkId: s.chunkId,
+      title: s.title,
+      sourceOrg: s.sourceOrg,
+      sourceUrl: s.sourceUrl,
+      isDemo: s.isDemo,
+      category: s.category,
+      snippet: s.snippet,
+      score: s.score,
+    }));
 }

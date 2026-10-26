@@ -2,8 +2,72 @@ export interface EmergencyRule {
   id: string;
   species: string[];
   label: string;
-  pattern: RegExp;
+  /** Keyword trigger. Used for the counterfactual window; skipped when `test` is set. */
+  pattern?: RegExp;
+  /**
+   * Rule-specific matcher for a family of phrasings that one regex would
+   * either miss or over-match. Returns the index of the trigger so the
+   * counterfactual check still knows where the claim sits, or null when the
+   * message does not report this sign.
+   */
+  test?: (text: string) => number | null;
   advice: string;
+}
+
+/* ── Refusing food or water ─────────────────────────────────────────────
+ *
+ * This is a family of phrasings rather than a phrase. "Not eating",
+ * "hasn't eaten since yesterday", "refused to eat for 1 day", "refused
+ * food", "not drinking" and the terse follow-up "refused for 1 day" all
+ * report the same sign, and the old single regex caught only the first two
+ * shapes. A live conversation showed the cost: turn one ("not eating for
+ * days") raised the red flag, turn two ("refused for 1 day") did not, so the
+ * urgent instruction silently disappeared from a worsening case.
+ *
+ * The parser is deliberately narrow in the other direction too: "refused to
+ * walk for a day" and "refused the carrier" are not appetite reports, and a
+ * duration only counts as an appetite report when nothing else sits between
+ * the verb and the duration.
+ */
+
+/** Verbs that can introduce a reduction in intake. */
+const INTAKE_VERB =
+  /\b(?:refus\w*|reject\w*|declin\w*|stopped|quit|won.?t|will not|isn.?t|is not|hasn.?t|has not|hadn.?t|had not|not|unable to|can.?t|cannot|barely|hardly)\b/;
+
+/** What an intake report is about: food, water, or the act of eating/drinking. */
+const INTAKE_OBJECT =
+  /\b(?:eat|eats|eating|eaten|ate|food|foods|meal|meals|kibble|water|drink|drinks|drinking|drunk|drank|bowl|dinner|breakfast|lunch|treat|treats|appetite|nibble|nibbles|nibbling|nibbled)\b/;
+
+/** A duration turns a bare "refused" into a report of how long it has lasted. */
+const DURATION =
+  /\b(?:for|since|over)\s+(?:\d+|a|an|one|two|three|four|five|six|seven|several|many|couple of|few|past|last)\s*(?:hours?|hrs?|days?|nights?|d)\b|\bsince\s+(?:yesterday|last night|this morning|last week|yesterday morning|yesterday evening)\b/;
+
+/** "refused to walk", "refused to go out" — refusal about something else. */
+const OTHER_ACTION =
+  /^\s*(?:to\s+)?(?:go|walk|play|come|take|leave|sleep|sit|stand|move|jump|run|be\s+(?:handled|picked|touched))\b/;
+
+/** Statements that need no verb analysis at all. */
+const EXPLICIT_NO_INTAKE =
+  /\b(?:no appetite|anorexia|anorexic|off (?:his|her|its|their) food|(?:ate|eaten|had) nothing|nothing (?:to eat|eaten)|has had no (?:food|water)|have had no (?:food|water)|won.?t touch (?:his|her|its|their|the)? ?(?:food|water)|not eating (?:at all|anything)|stopped eating entirely)\b/;
+
+/** Words allowed between the verb and a duration when no food word is present. */
+const DURATION_GAP = /^\s*(?:it|them|all|any|his|her|its|their|the|anything)?\s*$/;
+
+export function appetiteReportIndex(text: string): number | null {
+  const explicit = EXPLICIT_NO_INTAKE.exec(text);
+  if (explicit) return explicit.index;
+
+  const verb = INTAKE_VERB.exec(text);
+  if (!verb) return null;
+  const after = text.slice(verb.index + verb[0].length, verb.index + verb[0].length + 90);
+  const clause = after.split(/[.!?;]/)[0] ?? '';
+  if (OTHER_ACTION.test(clause)) return null;
+  if (INTAKE_OBJECT.test(clause)) return verb.index;
+  const duration = DURATION.exec(clause);
+  // "refused for 1 day" is an appetite report only when nothing sits between
+  // the verb and the duration — "refused the carrier for 1 day" is not.
+  if (duration && DURATION_GAP.test(clause.slice(0, duration.index))) return verb.index;
+  return null;
 }
 
 /**
@@ -116,7 +180,7 @@ const RULES: EmergencyRule[] = [
     id: 'not_eating',
     species: ['dog', 'cat', 'bird', 'cow', 'goat'],
     label: 'Not eating or drinking',
-    pattern: /(hasn.?t|has not|not|stopped|refus\w*) (eating|eaten|drinking|drunk)|no appetite|anorexi/i,
+    test: appetiteReportIndex,
     advice: 'A pet that stops eating or drinking can deteriorate quickly, especially cats, small birds and young animals. Contact a veterinarian the same day; do not force food or water.',
   },
 ];
@@ -212,12 +276,68 @@ export function detectEmergency(
   const name = (petName ?? '').trim().toLowerCase();
   for (const rule of RULES) {
     if (!rule.species.includes(speciesCode)) continue;
-    const match = rule.pattern.exec(normalized);
-    if (!match) continue;
-    if (isCounterfactual(normalized, match.index, name)) continue;
+    const index = rule.test ? rule.test(normalized) : rule.pattern ? rule.pattern.exec(normalized)?.index : undefined;
+    if (index === undefined || index === null) continue;
+    if (isCounterfactual(normalized, index, name)) continue;
     return { ruleId: rule.id, label: rule.label, advice: rule.advice };
   }
   return null;
+}
+
+/* ── Conversation-level safety context ─────────────────────────────────
+ *
+ * The red-flag check is stateless by design — it only ever sees the message in
+ * front of it — but an owner describes one problem over several turns. When
+ * the previous assistant turn raised a red flag and the owner answers a
+ * follow-up question about it, the concern is still the same concern, and an
+ * answer that quietly drops back to "routine" is a downgrade nobody asked for.
+ *
+ * Only the immediately preceding assistant turn is consulted. Every emergency
+ * reply repeats the banner, so a conversation that continues to describe the
+ * same problem keeps the context without carrying it forever; one ordinary
+ * answer ends it.
+ */
+
+export interface PriorEmergency extends EmergencyMatch {
+  /** index in the history array of the assistant message that raised it */
+  historyIndex: number;
+}
+
+/** The red flag raised by the last assistant turn, if it raised one. */
+export function priorEmergencyFromHistory(
+  history: Array<{ role: string; content: string }>,
+): PriorEmergency | null {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i]!.role !== 'assistant') continue;
+    const banner = /^\s*⚠️[^\n:]*:\s*(.+)$/m.exec(history[i]!.content ?? '');
+    if (!banner) return null;
+    const label = banner[1]!.trim().toLowerCase();
+    const rule = RULES.find((r) => r.label.toLowerCase() === label);
+    if (!rule) return null;
+    return { ruleId: rule.id, label: rule.label, advice: rule.advice, historyIndex: i };
+  }
+  return null;
+}
+
+/**
+ * Signs the owner is describing the problem as over. Deliberately strict: a
+ * message that still contains any negation keeps the red flag open, because
+ * "not eating again" and "still refusing" read like recovery and mean the
+ * opposite.
+ */
+const RESOLVED =
+  /\b(?:is |has |'s )?(?:eating|drinking|ate|drank|feeding)\b[^.!?]{0,30}\b(?:again|normally|well|fine|properly)\b|\b(?:appetite|interest in food)\b[^.!?]{0,20}\b(?:is |came )?back\b|\bback to (?:normal|eating|himself|herself|itself)\b|\b(?:all better|feeling better|much better|improving|improved|recovered|perked up|out of danger|doing fine)\b|\b(?:saw|seen|visited|took (?:him|her|it|them) to|been to) (?:the )?(?:vet|veterinarian|veterinary|hospital|clinic)\b|\b(?:vet|veterinarian)\b[^.!?]{0,20}\b(?:said|says)\b[^.!?]{0,30}\b(?:fine|okay|ok|normal|nothing)\b/i;
+
+const STILL_NEGATIVE = /n['’]t\b|\bnot\b|\bnever\b|\bstill\b|\brefus\w*|\bno appetite\b|\bworse|\bworsening\b|\bno (?:change|improvement)\b/;
+
+export function riskLooksResolved(text: string): boolean {
+  const normalized = text.toLowerCase();
+  // "no longer refusing food" is a resolution even though it contains a negative.
+  if (/\b(?:no longer|not any ?more|no more)\b[^.!?]{0,30}\b(?:refus\w*|a problem|an issue|worried|concerned|unwell)\b/.test(normalized)) {
+    return true;
+  }
+  if (STILL_NEGATIVE.test(normalized)) return false;
+  return RESOLVED.test(normalized);
 }
 
 export const emergencyRuleSummaries = RULES.map((r) => ({

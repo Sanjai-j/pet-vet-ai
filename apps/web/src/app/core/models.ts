@@ -375,6 +375,8 @@ export interface AiReply {
    * on an answer.
    */
   followUps?: string[];
+  /** true when the red flag continued from the previous turn of the conversation */
+  emergencyContinued?: boolean;
   /** whether the configured model was called for this reply */
   llmAttempted?: boolean;
   /** sanitised provider failure when the model call failed — never a key */

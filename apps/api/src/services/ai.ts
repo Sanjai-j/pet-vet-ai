@@ -1,6 +1,12 @@
 import { one } from '../db.js';
 import { config } from '../config.js';
-import { detectEmergency, emergencyReferenceTopic, type EmergencyMatch } from './emergency.js';
+import {
+  detectEmergency,
+  emergencyReferenceTopic,
+  priorEmergencyFromHistory,
+  riskLooksResolved,
+  type EmergencyMatch,
+} from './emergency.js';
 import {
   checkEmergencyAnswer,
   checkGeneratedAnswer,
@@ -83,6 +89,11 @@ export interface AiReply {
    * instruction never depends on an answer.
    */
   followUps?: string[];
+  /**
+   * true when the red flag came from the previous turn of this conversation
+   * rather than from the wording of this message.
+   */
+  emergencyContinued?: boolean;
   /** true when the model was actually called for this reply */
   llmAttempted?: boolean;
   /** sanitised provider failure (never the key) when the model failed */
@@ -169,6 +180,23 @@ function sourcesForEmergency(sources: RetrievedSource[], match: EmergencyMatch):
 }
 
 /**
+ * Is this message a follow-up to the problem already under discussion, rather
+ * than a new question that happens to arrive next? Brevity is the signal —
+ * "still hiding", "no change", "refused for 1 day" — with the symptom and
+ * care vocabulary an owner uses when they are describing the same animal.
+ */
+const FOLLOW_UP_VOCABULARY =
+  /\b(?:still|same|no change|unchanged|worse|worsening|better|eating|eaten|ate|drinking|drink|food|water|appetite|refus\w*|vomit\w*|litter|urine|urinating|pee\w*|hid(?:ing|es|den)|weak|lethargic|sleeping|pain|shaking|trembling|breathing|vet|veterinar\w*)\b/i;
+
+function continuesConcern(message: string): boolean {
+  // A question asks for a new answer ("what brush should I buy?"), so it only
+  // continues the concern when it asks about the same symptoms or care.
+  if (message.includes('?')) return FOLLOW_UP_VOCABULARY.test(message);
+  const words = message.trim().split(/\s+/).filter(Boolean);
+  return words.length <= 12 || FOLLOW_UP_VOCABULARY.test(message);
+}
+
+/**
  * Optional questions that would help a veterinarian. They are asked *after* the
  * instruction to seek care and are never a gate on it — the owner can ignore
  * every one and still be told to go now.
@@ -235,11 +263,18 @@ function emergencyAnswer(
   match: EmergencyMatch,
   sources: RetrievedSource[],
   urgency: Urgency,
+  continued = false,
 ): string {
   const lines = [
     `⚠️ ${URGENCY_LABEL[urgency]}: ${match.label}`,
     '',
     match.advice,
+    ...(continued
+      ? [
+          '',
+          'This continues the red flag raised earlier in this conversation. Nothing you have described since then has resolved it, so the advice is unchanged.',
+        ]
+      : []),
     '',
     `Urgency level: ${urgency}.`,
     '',
@@ -342,6 +377,7 @@ function demoAnswer(
   task: string,
   recordLines: string[] = [],
   feedingLines: string[] = [],
+  reason: ModeReason = 'no_model_configured',
 ): string {
   const seen = new Set<string>();
   const bullets = sources
@@ -372,8 +408,31 @@ function demoAnswer(
     '',
     `What to do next: keep a simple log of appetite, water, energy and the signs you are seeing. Contact ${referralFor(pet.speciesCode)} if the signs persist, worsen, or you are unsure.`,
     '',
-    'This is a deterministic response built from the cited snippets. No language model was used for this answer.',
+    closingNote(reason),
   ].join('\n');
+}
+
+/**
+ * Fallback text that says which way the model was unavailable.
+ *
+ * "No language model was used for this answer" was printed even when the
+ * model *was* called and the provider returned 503, so a temporary outage read
+ * as an intentional deterministic design. The owner and the operator both
+ * need to know whether a model replied, was never configured, was switched
+ * off, or answered and failed the safety check.
+ */
+function closingNote(reason: ModeReason): string {
+  switch (reason) {
+    case 'provider_error':
+      return 'The language-model service was asked for an answer and did not return a usable one (provider error or timeout). This reply was built from the approved references instead; it is not a model answer, and retrying the same question later may reach the model.';
+    case 'guard_rejected':
+      return 'A language-model draft was discarded because it failed a safety check, so this reply was built from the approved references instead.';
+    case 'model_disabled_by_admin':
+      return 'The language model is switched off by the administrator for this deployment, so this reply was built from the approved references instead.';
+    case 'no_model_configured':
+    default:
+      return 'No language model is configured for this deployment, so this reply was built from the cited approved snippets.';
+  }
 }
 
 /**
@@ -557,7 +616,20 @@ export async function generateAiReply(
     console.warn('[ai] a model is configured but the administrator setting llmEnabled is false; answers stay deterministic');
   }
 
-  const emergency = detectEmergency(message, subjectSpecies, pet.name);
+  // A red flag in this message always wins. When this message has none, the
+  // previous assistant turn may still be the live concern: an owner answering
+  // "refused for 1 day" is continuing the same problem, not asking a fresh
+  // question, and dropping back to "routine" would silently withdraw advice
+  // they were already given. The carry stops as soon as the owner reports the
+  // problem as resolved, asks a general question, or writes something that is
+  // not a follow-up.
+  const currentEmergency = detectEmergency(message, subjectSpecies, pet.name);
+  const carried =
+    currentEmergency || general || riskLooksResolved(message) || !continuesConcern(message)
+      ? null
+      : priorEmergencyFromHistory(history);
+  const emergency = currentEmergency ?? carried;
+  const emergencyContinued = currentEmergency === null && carried !== null;
   const task = emergency ? 'emergency_triage' : detectTask(message);
   const capability = await getCapability(subjectSpecies, task);
   const urgency: Urgency = emergency ? urgencyForEmergency(emergency) : 'routine';
@@ -581,9 +653,17 @@ export async function generateAiReply(
       ? { ...pet, speciesCode: subjectSpecies, name: '', breedName: null, customBreed: null, ageEstimateMonths: null, weightKg: null, conditions: null, allergies: null, dietaryRestrictions: null, activityLevel: null }
       : pet;
     const relevant = sourcesForEmergency(await retrieveAllSources(emergencyPet, message, 3), emergency);
-    const safety = emergencyAnswer(pet, emergency, relevant, urgency);
+    const safety = emergencyAnswer(pet, emergency, relevant, urgency, emergencyContinued);
     const followUps = emergencyFollowUps(pet, emergency);
-    const base = { emergency, capability: capabilityInfo, urgency, disclaimer, referral, followUps };
+    const base = {
+      emergency,
+      capability: capabilityInfo,
+      urgency,
+      disclaimer,
+      referral,
+      followUps,
+      emergencyContinued: emergencyContinued || undefined,
+    };
 
     let llmAttempted = false;
     let providerError: string | null = null;
@@ -884,7 +964,7 @@ export async function generateAiReply(
   }
 
   return {
-    answer: demoAnswer(answerPet, sources, capability.status, task, recordLines, feedingLines),
+    answer: demoAnswer(answerPet, sources, capability.status, task, recordLines, feedingLines, fallbackReason),
     citations: sources,
     emergency: null,
     capability: capabilityInfo,
